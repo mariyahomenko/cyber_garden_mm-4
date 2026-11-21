@@ -289,6 +289,13 @@ class BarTextEdit(_BottomBarMixin, QtWidgets.QTextEdit):
         super().__init__(parent)
         self._bar_init()
 
+    def keyPressEvent(self, event):
+        if event.key() in (QtCore.Qt.Key_Return, QtCore.Qt.Key_Enter):
+            if not (event.modifiers() & QtCore.Qt.ShiftModifier):
+                event.ignore()
+                return
+        super().keyPressEvent(event)
+
 
 class BarTextBrowser(_BottomBarMixin, QtWidgets.QTextBrowser):
     def __init__(self, parent=None):

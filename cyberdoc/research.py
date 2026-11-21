@@ -1,19 +1,9 @@
 """Evidence-first structured extraction for the VINITI/YuFU specification.
 
-Этап 2: парсер структуры темы 1.
-
-* publications: title / year / DOI / authors (мягкие эвристики);
-* materials: формула, класс, размерность, добавки, Eg;
-* devices: архитектура, подложка, площадь, инкапсуляция, роль;
-* layers: порядок, функция, материал, толщина, метод осаждения,
-  отжиг, атмосфера;
-* measurements: тип, спектр, интенсивность, scan direction/rate,
-  маска, сертификация, температура, протокол старения;
-* results связываются с device_id / measurement_id / material_id,
-  если те определены рядом (иначе — None, без догадок).
-
-Неизвестное остаётся пустым. source_fragment — дословная подстрока
-страницы (требование tools/check_submission.py).
+Тема 1: тонкоплёночные солнечные элементы.
+Поля и правила — по submission_template и ТЗ.
+Неизвестное остаётся None (пусто), не выдумывается.
+source_fragment — дословная подстрока страницы PDF.
 """
 import json
 import re
@@ -46,22 +36,13 @@ FIELDS = {
         "source_fragment", "extraction_status",
     ],
     RAG: [
-        "publication_id", "title", "year", "doi", "authors",
-        "config_id", "rag_variant", "retrieval_method",
-        "embedding_model", "embedding_version",
-        "chunking_method", "chunk_size", "chunk_overlap", "chunk_unit",
-        "index_type", "vector_store", "top_k",
-        "reranker_model",
-        "generator_model", "generator_version",
-        "dataset_id", "dataset_name", "dataset_version",
-        "task_id", "task_type", "language", "scientific_domain",
-        "experiment_id", "evaluation_protocol", "baseline_name",
-        "metric_name", "metric_variant", "metric_direction",
-        "metric_k", "metric_value", "metric_unit", "baseline_value",
-        "raw_value", "raw_unit", "normalized_value", "normalized_unit",
-        "result_origin", "cited_publication_id",
-        "source_page", "source_section", "source_table", "source_figure",
-        "source_fragment", "extraction_status",
+        "publication_id", "config_id", "rag_variant", "retrieval_method",
+        "embedding_model", "chunking_method", "chunk_size", "chunk_overlap",
+        "index_type", "vector_store", "top_k", "reranker_model",
+        "generator_model", "dataset_id", "task_id", "experiment_id",
+        "metric_name", "metric_value", "metric_unit", "baseline_value",
+        "raw_value", "normalized_value", "source_page", "source_fragment",
+        "extraction_status",
     ],
 }
 
@@ -95,51 +76,21 @@ PATTERNS = {
     ],
 }
 
-NORMALIZATION_RULES = {
-    "SOLAR": {
-        "PCE": {"unit": "%", "note": "0..100"},
-        "FF": {"unit": "%", "note": "0..100"},
-        "Voc": {"unit": "V", "note": "mV / 1000"},
-        "Jsc": {"unit": "mA/cm²", "note": "A/m² / 10"},
-        "Jsc_EQE": {"unit": "mA/cm²", "note": "A/m² / 10"},
-        "Eg": {"unit": "eV", "note": "как есть"},
-        "Area": {"unit": "cm²", "note": "mm² / 100, m² × 10000"},
-        "LightIntensity": {"unit": "mW/cm²", "note": "W/m² / 10"},
-        "Thickness": {"unit": "nm", "note": "как есть"},
-        "T80": {"unit": "h", "note": "как есть"},
-    },
-    "RAG": {
-        "Recall": {"unit": "fraction", "note": "% / 100"},
-        "Precision": {"unit": "fraction", "note": "% / 100"},
-        "MRR": {"unit": "fraction", "note": "% / 100"},
-        "NDCG": {"unit": "fraction", "note": "% / 100"},
-    },
-}
-
-COMPARISON_RULES = {
-    "SOLAR": (
-        "Сравниваются результаты при совпадении: класс материала, тип "
-        "прибора, условия AM1.5G 100 мВт/см², сопоставимая площадь "
-        "(±10 %), агрегация и направление развёртки. Сертифицированные "
-        "значения и стабильность сравниваются отдельно."
-    ),
-    "RAG": (
-        "Сравнение с baseline допускается только при совпадении "
-        "dataset_id, task_id и evaluation_protocol."
-    ),
+# Служебные эвристики: они идут в devices/materials/layers/measurements,
+# но НЕ в results (results.csv допускает только метрики из ТЗ).
+SKIP_METRICS = {
+    "Architecture", "Substrate", "MaterialClass", "Dimensionality",
+    "Certified", "Thickness", "Area", "ScanRate", "LightIntensity",
+    "ScanDirection", "Eg",
 }
 
 RE_TABLE = re.compile(r"\b(?:Table|Таблица)\s*([0-9]+[A-Za-z]?)", re.I)
 RE_FIG = re.compile(r"\b(?:Fig(?:ure)?\.?|Рис(?:унок)?\.?)\s*([0-9]+[A-Za-z]?)", re.I)
 RE_SECTION = re.compile(r"\b(?:Section|Раздел)\s*([0-9]+(?:\.[0-9]+)*)", re.I)
 
-# --- эвристики для структуры ---
 RE_FORMULA = re.compile(
     r"\b((?:FA|MA|Cs|Rb|K|Pb|Sn|Bi|Sb|Ag|Cu|Zn|Cd|In|Ga|Se|S|I|Br|Cl)"
     r"(?:[A-Z][a-z]?\d*){1,10})\b")
-RE_DEVICE_LABEL = re.compile(
-    r"\b(champion|best|control|reference|pristine|target|record|device)\b",
-    re.I)
 RE_LAYER_ROW = re.compile(
     r"(?P<mat>[A-Z][A-Za-z0-9().\-/]{1,30})\s*[,\-—]?\s*"
     r"(?P<th>\d+(?:[.,]\d+)?)\s*(?P<unit>nm|нм)\b")
@@ -157,9 +108,15 @@ RE_STAB = re.compile(r"\b(T80|MPP|maximum\s+power\s+point|damp[- ]heat|"
 
 
 def _number(value):
+    """1,322 -> 1322; 1,3 -> 1.3; 1.322 -> 1.322."""
+    s = str(value).strip().replace(" ", "")
+    if re.fullmatch(r"\d{1,3}(?:,\d{3})+", s):
+        s = s.replace(",", "")
+    else:
+        s = s.replace(",", ".")
     try:
-        return float(str(value).replace(",", "."))
-    except (ValueError, TypeError):
+        return float(s)
+    except ValueError:
         return None
 
 
@@ -217,119 +174,79 @@ def _line_fragment(text, match):
     return frag or match.group(0)
 
 
-# ======================================================================
-# publications
-# ======================================================================
 def parse_publication(doc):
-    """Мягкие эвристики для title / year / DOI / authors.
-
-    Неизвестное — None. Не выдумываем.
-    """
+    """Мягкие эвристики для title/year/DOI/authors. Неизвестное — None."""
     pub_id = Path(doc.path).stem
-    text0 = (doc.pages_text[0] if doc.pages_text else "")
-    first = [l.strip() for l in text0.splitlines() if l.strip()]
+    text0 = doc.pages_text[0] if doc.pages_text else ""
+    lines = [l.strip() for l in text0.splitlines() if l.strip()]
 
-    title = None
-    for line in first[:15]:
+    best = ""
+    for line in lines[:30]:
         low = line.lower()
-        if (len(line) > 20 and "http" not in low
-                and not line.startswith("=")
-                and not re.match(r"^[A-Z][a-z]+ \d+", line)
-                and "journal" not in low
-                and "volume" not in low):
-            title = line
-            break
+        if any(k in low for k in ("http", "doi", "journal", "volume",
+                                  "received", "accepted", "published",
+                                  "frontiers", "rsc adv")):
+            continue
+        if len(line) > len(best) and len(line) > 25:
+            best = line
+    title = best or None
 
-    year = None
     m = re.search(r"\b(19|20)\d{2}\b", text0)
-    if m:
-        year = int(m.group(0))
+    year = int(m.group(0)) if m else None
 
-    doi = None
     m = re.search(r"\b10\.\d{4,9}/[-._;()/:A-Za-z0-9]+\b", text0)
-    if m:
-        doi = m.group(0).rstrip(".,;)")
+    doi = m.group(0).rstrip(".,;)") if m else None
 
     authors = None
-    for line in first[:20]:
-        if "," in line and re.search(r"[A-Z][a-z]+ [A-Z]", line) \
-                and "university" not in line.lower() \
-                and "institute" not in line.lower() \
-                and "china" not in line.lower() \
-                and "journal" not in line.lower():
-            candidates = [a.strip() for a in line.split(",") if a.strip()]
-            names = [a for a in candidates if re.match(r"^[A-Z][\w.\-]+\s+[A-Z]", a)]
+    for line in lines[:25]:
+        if "," in line and re.search(r"[A-Z][a-z]+ [A-Z]", line):
+            low = line.lower()
+            if any(k in low for k in ("university", "institute",
+                                      "journal", "china", "russia")):
+                continue
+            parts = [a.strip() for a in line.split(",") if a.strip()]
+            names = [a for a in parts if re.match(r"^[A-Z][\w.\-]+\s+[A-Z]", a)]
             if len(names) >= 2:
-                authors = "; ".join(candidates)
+                authors = "; ".join(parts)
                 break
 
     in_scope = "true"
-    exclusion_reason = ""
-    low_all = "\n".join(doc.pages_text).lower()
-    if "tandem" in low_all:
+    reason = ""
+    if "tandem" in "\n".join(doc.pages_text).lower():
         in_scope = "false"
-        exclusion_reason = "tandem devices are out of scope"
+        reason = "tandem devices are out of scope"
 
-    return {
-        "publication_id": pub_id,
-        "title": title,
-        "year": year,
-        "DOI": doi,
-        "authors": authors,
-        "in_scope": in_scope,
-        "exclusion_reason": exclusion_reason,
-    }
+    return {"publication_id": pub_id, "title": title, "year": year,
+            "DOI": doi, "authors": authors, "in_scope": in_scope,
+            "exclusion_reason": reason}
 
 
-# ======================================================================
-# materials
-# ======================================================================
 def parse_materials(doc, pub_id):
     """Формула, класс, размерность, добавки, Eg. Без догадок."""
     text = "\n".join(doc.pages_text)
-    out = []
-    seen = set()
-
-    # Каждая формула — отдельный материал-кандидат.
+    out, seen = [], set()
     for m in RE_FORMULA.finditer(text):
         formula = m.group(1)
-        if formula.lower() in seen:
-            continue
-        # отбрасываем очевидно нехимические строки
-        if not re.search(r"[A-Z][a-z]?", formula) or len(formula) < 3:
+        if formula.lower() in seen or len(formula) < 3:
             continue
         seen.add(formula.lower())
         cls = None
         low = text.lower()
-        if "perovskite" in low:
-            cls = "perovskite"
-        elif "cigs" in low:
-            cls = "CIGS"
-        elif "cdte" in low:
-            cls = "CdTe"
-        elif "kesterite" in low or "czts" in low:
-            cls = "kesterite"
-        elif "sb2se3" in low:
-            cls = "Sb2Se3"
+        if "perovskite" in low: cls = "perovskite"
+        elif "cigs" in low: cls = "CIGS"
+        elif "cdte" in low: cls = "CdTe"
+        elif "kesterite" in low or "czts" in low: cls = "kesterite"
+        elif "sb2se3" in low: cls = "Sb2Se3"
         dim = None
         mdim = re.search(r"\b(2D|3D)\s+(?:perovskite|layer)", text, re.I)
-        if mdim:
-            dim = mdim.group(1).upper()
-
-        eg = None
-        eg_unit = None
-        meg = re.search(
-            r"\b(?:E[_ ]?g|band.?gap)\s*(?:=|:|of|was|~|≈)?\s*(\d+(?:[.,]\d+)?)\s*(eV|эВ)\b",
-            text, re.I)
+        if mdim: dim = mdim.group(1).upper()
+        eg, eg_unit = None, None
+        meg = re.search(r"\b(?:E[_ ]?g|band.?gap)\s*(?:=|:|of|was|~|≈)?\s*(\d+(?:[.,]\d+)?)\s*(eV|эВ)\b", text, re.I)
         if meg:
-            eg = _number(meg.group(1))
-            eg_unit = "eV"
-
+            eg = _number(meg.group(1)); eg_unit = "eV"
         additives = None
         madd = re.search(r"\b(?:doped|doping|additive|additives)\s+with\s+([A-Za-z0-9₂₃₄\- ]{2,40})", text, re.I)
-        if madd:
-            additives = madd.group(1).strip()
-
+        if madd: additives = madd.group(1).strip()
         out.append({
             "publication_id": pub_id,
             "material_id": "M-%d" % (len(out) + 1),
@@ -346,218 +263,119 @@ def parse_materials(doc, pub_id):
     return out
 
 
-# ======================================================================
-# devices
-# ======================================================================
 def parse_devices(doc, pub_id, materials):
-    """Архитектура, подложка, площадь, роль, инкапсуляция."""
     text = "\n".join(doc.pages_text)
     out = []
-    seen = set()
-
     arch = None
     m = re.search(r"\b(n-i-p|p-i-n|nip|pin|substrate|superstrate)\b", text, re.I)
-    if m:
-        arch = m.group(1).lower()
-
+    if m: arch = m.group(1).lower()
     substrate = None
     m = re.search(r"\b(glass|ITO|FTO|flexible|PET|metal)\s+(?:substrate|glass)?\b", text, re.I)
-    if m:
-        substrate = m.group(1)
-
-    area = None
-    area_unit = None
+    if m: substrate = m.group(1)
+    area, area_unit = None, None
     m = re.search(r"\b(?:active\s+area|area)\s*(?:=|:|of|was)?\s*(\d+(?:[.,]\d+)?)\s*(cm2|cm²|mm2|mm²|m2|m²)", text, re.I)
     if m:
-        area, area_unit = _normalize_unit(
-            _number(m.group(1)), m.group(2), "Area")
-
-    area_def = None
-    if re.search(r"\b(?:aperture|shadow\s+mask|mask)\b", text, re.I):
-        area_def = "masked"
-
-    encaps = None
-    if re.search(r"\bencapsulat", text, re.I):
-        encaps = "encapsulated"
-
-    # Один общий прибор, если явно не сказано иное.
+        area, area_unit = _normalize_unit(_number(m.group(1)), m.group(2), "Area")
+    area_def = "masked" if re.search(r"\b(?:aperture|shadow\s+mask|mask)\b", text, re.I) else None
+    encaps = "encapsulated" if re.search(r"\bencapsulat", text, re.I) else None
     if arch or substrate or area or "device" in text.lower():
         mat_id = materials[0]["material_id"] if materials else None
         out.append({
-            "publication_id": pub_id,
-            "device_id": "DEV-1",
-            "absorber_material_id": mat_id,
-            "device_label": "device",
-            "device_role": "target",
-            "device_type": "single-junction",
-            "architecture": arch,
-            "substrate_type": substrate,
-            "active_area": area,
-            "area_unit": area_unit,
-            "area_definition": area_def,
-            "encapsulation": encaps,
-            "note": "",
+            "publication_id": pub_id, "device_id": "DEV-1",
+            "absorber_material_id": mat_id, "device_label": "device",
+            "device_role": "target", "device_type": "single-junction",
+            "architecture": arch, "substrate_type": substrate,
+            "active_area": area, "area_unit": area_unit,
+            "area_definition": area_def, "encapsulation": encaps, "note": "",
         })
     return out
 
 
-# ======================================================================
-# layers
-# ======================================================================
 def parse_layers(doc, pub_id, devices):
-    """Слои: порядок, функция, материал, толщина, метод, отжиг, атмосфера.
-
-    Консервативно: только строки «material thickness nm» и явные роли.
-    """
     text = "\n".join(doc.pages_text)
-    out = []
-    seen = set()
+    out, seen = [], set()
     device_id = devices[0]["device_id"] if devices else None
-
     role_hints = {
         "compact tio2": "ETL", "c-tio2": "ETL", "tio2": "ETL",
         "sno2": "ETL", "zno": "ETL",
         "perovskite": "absorber", "cspb": "absorber", "mapb": "absorber",
         "fapb": "absorber",
         "spiro": "HTL", "p3ht": "HTL", "pedot": "HTL", "nio": "HTL",
-        "ag": "contact", "au": "contact", "gold": "contact", "silver": "contact",
-        "ito": "contact", "fto": "contact",
+        "ag": "contact", "au": "contact", "gold": "contact",
+        "silver": "contact", "ito": "contact", "fto": "contact",
     }
-
-    # Явные пары «материал + толщина».
     for m in RE_LAYER_ROW.finditer(text):
         mat = m.group("mat").strip()
         th = _number(m.group("th"))
-        unit = "nm"
         key = (mat.lower(), th)
-        if key in seen:
-            continue
+        if key in seen: continue
         seen.add(key)
         func = None
         for hint, role in role_hints.items():
             if hint in mat.lower():
-                func = role
-                break
+                func = role; break
         dep = None
         mdep = RE_DEPOSITION.search(text)
-        if mdep:
-            dep = mdep.group(1).lower()
-        an_temp = None
-        an_time = None
-        an_unit = None
+        if mdep: dep = mdep.group(1).lower()
+        an_temp, an_time, an_unit = None, None, None
         man = RE_ANNEAL.search(text)
         if man:
             an_temp = int(man.group(1))
             if man.group(2):
-                an_time = _number(man.group(2))
-                an_unit = man.group(3)
-        atm = None
-        if re.search(r"\bglove\s*box|nitrogen|n2\b", text, re.I):
-            atm = "N2"
+                an_time = _number(man.group(2)); an_unit = man.group(3)
+        atm = "N2" if re.search(r"\bglove\s*box|nitrogen|n2\b", text, re.I) else None
         out.append({
-            "publication_id": pub_id,
-            "layer_id": "L-%d" % (len(out) + 1),
-            "device_id": device_id,
-            "layer_order": len(out) + 1,
-            "layer_function": func,
-            "layer_material": mat,
-            "layer_thickness": th,
-            "thickness_unit": unit,
-            "deposition_method": dep,
-            "annealing_temperature": an_temp,
-            "annealing_time": an_time,
-            "atmosphere": atm,
-            "note": ("annealing_time_unit=" + str(an_unit)) if an_unit else "",
+            "publication_id": pub_id, "layer_id": "L-%d" % (len(out) + 1),
+            "device_id": device_id, "layer_order": len(out) + 1,
+            "layer_function": func, "layer_material": mat,
+            "layer_thickness": th, "thickness_unit": "nm",
+            "deposition_method": dep, "annealing_temperature": an_temp,
+            "annealing_time": an_time, "atmosphere": atm,
+            "note": ("time_unit=" + str(an_unit)) if an_unit else "",
         })
     return out
 
 
-# ======================================================================
-# measurements
-# ======================================================================
 def parse_measurements(doc, pub_id, devices):
-    """Условия измерения: тип, спектр, интенсивность, scan, маска, серт."""
     text = "\n".join(doc.pages_text)
     device_id = devices[0]["device_id"] if devices else None
-    out = []
-    seen = set()
-
-    m_type = None
-    if re.search(r"\bJ-?V\b", text):
-        m_type = "J-V"
-    elif re.search(r"\bEQE\b", text):
-        m_type = "EQE"
-
+    m_type = "J-V" if re.search(r"\bJ-?V\b", text) else ("EQE" if re.search(r"\bEQE\b", text) else None)
     spectrum = "AM1.5G" if re.search(r"AM\s*1\.?5G", text, re.I) else None
-
-    intensity = None
-    intensity_unit = None
+    intensity, intensity_unit = None, None
     m = re.search(r"(\d+(?:[.,]\d+)?)\s*(mW/cm2|mW/cm²|W/m2|W/m²)", text, re.I)
     if m:
-        intensity, intensity_unit = _normalize_unit(
-            _number(m.group(1)), m.group(2), "LightIntensity")
-
+        intensity, intensity_unit = _normalize_unit(_number(m.group(1)), m.group(2), "LightIntensity")
     scan_dir = None
     m = re.search(r"\b(forward|reverse)\s+scan\b", text, re.I)
-    if m:
-        scan_dir = m.group(1).lower()
-
+    if m: scan_dir = m.group(1).lower()
     scan_rate = None
     m = re.search(r"scan\s+rate\s*(?:of)?\s*(\d+(?:[.,]\d+)?)\s*(V\s*s[-−]?1|V/s|mV/s)", text, re.I)
-    if m:
-        scan_rate, _u = _normalize_unit(_number(m.group(1)), m.group(2), "ScanRate")
-
+    if m: scan_rate, _ = _normalize_unit(_number(m.group(1)), m.group(2), "ScanRate")
     mask = bool(RE_MASK.search(text))
     cert = bool(RE_CERT.search(text))
-
     temp = None
     m = RE_TEMP.search(text)
-    if m:
-        temp = int(m.group(1))
-
+    if m: temp = int(m.group(1))
     stab = None
     m = RE_STAB.search(text)
-    if m:
-        stab = m.group(1)
-
+    if m: stab = m.group(1)
     if not any([m_type, spectrum, intensity, scan_dir, mask, cert, temp, stab]):
-        return out
-
-    key = (m_type, spectrum, intensity, scan_dir, scan_rate, mask, cert, temp, stab)
-    if key in seen:
-        return out
-    seen.add(key)
-
-    out.append({
-        "publication_id": pub_id,
-        "measurement_id": "MEAS-1",
-        "device_id": device_id,
-        "measurement_type": m_type,
-        "spectrum": spectrum,
-        "light_intensity": intensity,
-        "intensity_unit": intensity_unit,
-        "scan_direction": scan_dir,
-        "scan_rate": scan_rate,
-        "mask_used": mask,
-        "certified": cert,
-        "certification_lab": None,
-        "temperature": temp,
-        "stability_protocol": stab,
-        "stress_conditions": None,
-        "note": "",
-    })
-    return out
+        return []
+    return [{
+        "publication_id": pub_id, "measurement_id": "MEAS-1",
+        "device_id": device_id, "measurement_type": m_type,
+        "spectrum": spectrum, "light_intensity": intensity,
+        "intensity_unit": intensity_unit, "scan_direction": scan_dir,
+        "scan_rate": scan_rate, "mask_used": mask, "certified": cert,
+        "certification_lab": None, "temperature": temp,
+        "stability_protocol": stab, "stress_conditions": None, "note": "",
+    }]
 
 
-# ======================================================================
-# results (как в Этапе 1 + привязка к device_id / measurement_id)
-# ======================================================================
-def extract_candidates(doc, domain, devices=None, measurements=None,
-                       materials=None):
-    """Regex-извлечение. source_fragment — дословная подстрока страницы."""
+def extract_candidates(doc, domain, devices=None, measurements=None, materials=None):
+    """Только метрики (results). source_fragment — дословная подстрока."""
     if domain not in FIELDS:
         raise ValueError("Unknown domain")
-
     records = []
     pub_id = Path(doc.path).stem
     device_id = devices[0]["device_id"] if devices else None
@@ -565,7 +383,9 @@ def extract_candidates(doc, domain, devices=None, measurements=None,
     material_id = materials[0]["material_id"] if materials else None
 
     for page_index, text in enumerate(doc.pages_text):
-        for name, pattern, target_unit in PATTERNS[domain]:
+        for name, pattern, _unit in PATTERNS[domain]:
+            if name in SKIP_METRICS:
+                continue
             for match in re.finditer(pattern, text, re.I):
                 groups = match.groups()
                 if domain == RAG and name in ("Recall@k", "Precision@k", "NDCG"):
@@ -576,42 +396,27 @@ def extract_candidates(doc, domain, devices=None, measurements=None,
                     k = None
                     raw = groups[0]
                     raw_unit = groups[1] if len(groups) >= 2 else None
-
-                raw_unit = raw_unit or ("fraction" if domain == RAG else None)
                 value = _number(raw)
-                normalized, normalized_unit = _normalize_unit(value, raw_unit, name)
-
-                fragment = _line_fragment(text, match)
+                norm, norm_unit = _normalize_unit(value, raw_unit, name)
                 section, table, figure = _context_source(text, match)
-
-                record = {key: None for key in FIELDS[domain]}
-                record.update({
-                    "result_id": str(uuid.uuid4()),
-                    "domain": domain,
-                    "publication_id": pub_id,
-                    "source_file": doc.path,
+                rec = {key: None for key in FIELDS[domain]}
+                rec.update({
+                    "result_id": str(uuid.uuid4()), "domain": domain,
+                    "publication_id": pub_id, "source_file": doc.path,
                     "source_page": page_index + 1,
-                    "source_section": section,
-                    "source_table": table,
+                    "source_section": section, "source_table": table,
                     "source_figure": figure,
-                    "source_fragment": fragment,
-                    "result_origin": "primary",
-                    "cited_publication_id": None,
-                    "metric_name": name,
-                    "metric_k": int(k) if k else None,
-                    "metric_value": normalized,
-                    "metric_unit": normalized_unit,
-                    "raw_value": raw,
-                    "raw_unit": raw_unit,
-                    "normalized_value": normalized,
-                    "normalized_unit": normalized_unit,
+                    "source_fragment": _line_fragment(text, match),
+                    "result_origin": "primary", "cited_publication_id": None,
+                    "metric_name": name, "metric_k": int(k) if k else None,
+                    "metric_value": norm, "metric_unit": norm_unit,
+                    "raw_value": raw, "raw_unit": raw_unit,
+                    "normalized_value": norm, "normalized_unit": norm_unit,
                     "extraction_status": "candidate",
-                    "device_id": device_id,
-                    "measurement_id": measurement_id,
+                    "device_id": device_id, "measurement_id": measurement_id,
                     "material_id": material_id,
                 })
-                records.append(record)
-
+                records.append(rec)
     return records
 
 
@@ -678,9 +483,6 @@ def validate(record):
     return findings
 
 
-# ======================================================================
-# сборка и экспорт
-# ======================================================================
 def extract_publication(doc):
     """Полный проход по одной статье: pub / materials / devices /
     layers / measurements / results."""
@@ -707,6 +509,7 @@ def extract_publication(doc):
 
 
 def export_dataset(path, records, domain):
+    """Экспорт в JSON (для отладки и для кнопки «Экспорт JSON»)."""
     selected = [r for r in records if r.get("domain") == domain]
     findings = [f for r in selected for f in validate(r)]
     payload = {
@@ -717,8 +520,6 @@ def export_dataset(path, records, domain):
             "fields": FIELDS[domain],
             "unknown_values": "null; never inferred",
             "status_values": ["candidate", "verified", "rejected"],
-            "normalization_rules": NORMALIZATION_RULES.get(domain.upper(), {}),
-            "comparison_rules": COMPARISON_RULES.get(domain.upper(), ""),
             "coverage": field_coverage(selected, domain),
         },
         "records": selected,
@@ -728,88 +529,172 @@ def export_dataset(path, records, domain):
         json.dump(payload, fh, ensure_ascii=False, indent=2)
     return len(selected), len(findings)
 
+def export_workspace(path, docs):
+    """Сохраняет полный рабочий набор: publications/materials/devices/
+    layers/measurements/results/issues по всем открытым документам."""
+    data = {
+        "passport": {
+            "name": "CyberDoc workspace",
+            "version": "0.6",
+            "domain": SOLAR,
+            "unknown_values": "null; never inferred",
+            "status_values": ["candidate", "verified", "rejected"],
+        },
+        "publications": [],
+        "materials": [],
+        "devices": [],
+        "layers": [],
+        "measurements": [],
+        "results": [],
+        "issues": [],
+    }
+    for doc in docs.values():
+        full = extract_publication(doc)
+        data["publications"].append(full["publication"])
+        data["materials"].extend(full["materials"])
+        data["devices"].extend(full["devices"])
+        data["layers"].extend(full["layers"])
+        data["measurements"].extend(full["measurements"])
+        data["results"].extend(full["results"])
+        data["issues"].extend(full["issues"])
+    with open(path, "w", encoding="utf-8") as fh:
+        json.dump(data, fh, ensure_ascii=False, indent=2)
+    return sum(len(data[k]) for k in (
+        "publications", "materials", "devices", "layers",
+        "measurements", "results", "issues"))
 
-def export_submission_csv(out_dir, doc, records=None, domain=SOLAR,
-                          publication_meta=None):
-    """Заполняет 7 CSV формата сдачи по одной статье.
+def export_workspace(path, docs):
+    """Сохраняет полный рабочий набор: publications/materials/devices/
+    layers/measurements/results/issues по всем открытым документам."""
+    data = {
+        "passport": {
+            "name": "CyberDoc workspace",
+            "version": "0.6",
+            "domain": SOLAR,
+            "unknown_values": "null; never inferred",
+            "status_values": ["candidate", "verified", "rejected"],
+        },
+        "publications": [],
+        "materials": [],
+        "devices": [],
+        "layers": [],
+        "measurements": [],
+        "results": [],
+        "issues": [],
+    }
+    for doc in docs.values():
+        full = extract_publication(doc)
+        data["publications"].append(full["publication"])
+        data["materials"].extend(full["materials"])
+        data["devices"].extend(full["devices"])
+        data["layers"].extend(full["layers"])
+        data["measurements"].extend(full["measurements"])
+        data["results"].extend(full["results"])
+        data["issues"].extend(full["issues"])
+    with open(path, "w", encoding="utf-8") as fh:
+        json.dump(data, fh, ensure_ascii=False, indent=2)
+    return sum(len(data[k]) for k in (
+        "publications", "materials", "devices", "layers",
+        "measurements", "results", "issues"))
 
-    Если records не переданы — делает полный проход `extract_publication`.
-    """
-    from . import submission_export
+
+def import_workspace(path):
+    """Читает JSON рабочего набора. Возвращает dict со всеми таблицами.
+    Поддерживает и старый формат (records), и новый (results)."""
+    with open(path, encoding="utf-8") as fh:
+        payload = json.load(fh)
+    out = {k: [] for k in (
+        "publications", "materials", "devices", "layers",
+        "measurements", "results", "issues")}
+    # новый формат
+    for key in out:
+        if isinstance(payload.get(key), list):
+            out[key] = payload[key]
+    # старый формат: records -> results
+    if not out["results"] and isinstance(payload.get("records"), list):
+        out["results"] = payload["records"]
+    # findings -> issues
+    if not out["issues"] and isinstance(payload.get("validation_findings"), list):
+        out["issues"] = payload["validation_findings"]
+    return out
+
+def import_workspace(path):
+    """Читает JSON рабочего набора. Возвращает dict со всеми таблицами.
+    Поддерживает и старый формат (records), и новый (results)."""
+    with open(path, encoding="utf-8") as fh:
+        payload = json.load(fh)
+    out = {k: [] for k in (
+        "publications", "materials", "devices", "layers",
+        "measurements", "results", "issues")}
+    # новый формат
+    for key in out:
+        if isinstance(payload.get(key), list):
+            out[key] = payload[key]
+    # старый формат: records -> results
+    if not out["results"] and isinstance(payload.get("records"), list):
+        out["results"] = payload["records"]
+    # findings -> issues
+    if not out["issues"] and isinstance(payload.get("validation_findings"), list):
+        out["issues"] = payload["validation_findings"]
+    return out
+
+def export_submission_csv(out_dir, doc):
+    """Экспорт в 7 CSV формата сдачи для одной статьи."""
+    import csv
+    import os
 
     full = extract_publication(doc)
-    if records is not None:
-        full["results"] = records
-    pub_id = full["publication"]["publication_id"]
+    os.makedirs(out_dir, exist_ok=True)
 
-    publications = [{
-        "publication_id": pub_id,
-        "title": full["publication"].get("title"),
-        "year": full["publication"].get("year"),
-        "DOI": full["publication"].get("DOI"),
-        "authors": full["publication"].get("authors"),
-        "in_scope": full["publication"].get("in_scope", "true"),
-        "exclusion_reason": full["publication"].get("exclusion_reason", ""),
-    }]
+    def write_csv(name, rows, cols):
+        path = os.path.join(out_dir, name)
+        with open(path, "w", encoding="utf-8-sig", newline="") as f:
+            w = csv.DictWriter(f, fieldnames=cols)
+            w.writeheader()
+            for r in rows:
+                w.writerow({c: r.get(c, "") if r.get(c) is not None else ""
+                            for c in cols})
 
-    materials = full["materials"]
-    devices = full["devices"]
-    layers = full["layers"]
-    measurements = full["measurements"]
-
-    results = []
-    issues = []
-    for r in full["results"]:
-        if r.get("domain") != domain:
-            continue
-        results.append({
-            "publication_id": r.get("publication_id"),
-            "result_id": r.get("result_id"),
-            "device_id": r.get("device_id"),
-            "measurement_id": r.get("measurement_id"),
-            "material_id": r.get("material_id"),
-            "metric_name": r.get("metric_name"),
-            "metric_value": r.get("metric_value"),
-            "metric_unit": r.get("metric_unit"),
-            "aggregation": r.get("aggregation"),
-            "spread_value": r.get("spread_value"),
-            "n_devices": r.get("n_devices"),
-            "time_point": r.get("time_point"),
-            "time_unit": r.get("time_unit"),
-            "raw_value": r.get("raw_value"),
-            "raw_unit": r.get("raw_unit"),
-            "normalized_value": r.get("normalized_value"),
-            "normalized_unit": r.get("normalized_unit"),
-            "result_origin": r.get("result_origin") or "primary",
-            "cited_publication_id": r.get("cited_publication_id"),
-            "source_page": r.get("source_page"),
-            "source_section": r.get("source_section"),
-            "source_table": r.get("source_table"),
-            "source_figure": r.get("source_figure"),
-            "source_fragment": r.get("source_fragment"),
-            "extraction_status": r.get("extraction_status") or "candidate",
-            "duplicate_of": r.get("duplicate_of"),
-            "note": "",
-        })
-
-    for f in full["issues"]:
-        issues.append({
-            "publication_id": f.get("publication_id"),
-            "issue_id": str(uuid.uuid4()),
-            "record_ids": f.get("record_id"),
-            "check_name": f.get("rule"),
-            "description": f.get("message"),
-            "source_page": f.get("source_page"),
-            "source_fragment": f.get("source_fragment"),
-        })
-
-    return submission_export.export_submission(
-        out_dir,
-        publications=publications,
-        materials=materials,
-        devices=devices,
-        layers=layers,
-        measurements=measurements,
-        results=results,
-        issues=issues,
-    )
+    write_csv("publications.csv", [full["publication"]], [
+        "publication_id", "title", "year", "DOI", "authors",
+        "in_scope", "exclusion_reason",
+    ])
+    write_csv("materials.csv", full["materials"], [
+        "publication_id", "material_id", "material_name_raw",
+        "formula_normalized", "material_class", "dimensionality",
+        "additives", "bandgap_value", "bandgap_unit", "bandgap_method",
+        "note",
+    ])
+    write_csv("devices.csv", full["devices"], [
+        "publication_id", "device_id", "absorber_material_id",
+        "device_label", "device_role", "device_type", "architecture",
+        "substrate_type", "active_area", "area_unit", "area_definition",
+        "encapsulation", "note",
+    ])
+    write_csv("layers.csv", full["layers"], [
+        "publication_id", "layer_id", "device_id", "layer_order",
+        "layer_function", "layer_material", "layer_thickness",
+        "thickness_unit", "deposition_method", "annealing_temperature",
+        "annealing_time", "atmosphere", "note",
+    ])
+    write_csv("measurements.csv", full["measurements"], [
+        "publication_id", "measurement_id", "device_id",
+        "measurement_type", "spectrum", "light_intensity",
+        "intensity_unit", "scan_direction", "scan_rate", "mask_used",
+        "certified", "certification_lab", "temperature",
+        "stability_protocol", "stress_conditions", "note",
+    ])
+    write_csv("results.csv", full["results"], [
+        "publication_id", "result_id", "device_id", "measurement_id",
+        "material_id", "metric_name", "metric_value", "metric_unit",
+        "aggregation", "spread_value", "n_devices", "time_point",
+        "time_unit", "raw_value", "raw_unit", "normalized_value",
+        "normalized_unit", "result_origin", "cited_publication_id",
+        "source_page", "source_section", "source_table", "source_figure",
+        "source_fragment", "extraction_status", "duplicate_of", "note",
+    ])
+    write_csv("issues.csv", full["issues"], [
+        "publication_id", "issue_id", "record_ids", "check_name",
+        "description", "source_page", "source_fragment",
+    ])
+    return out_dir

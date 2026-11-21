@@ -27,9 +27,9 @@ def set_theme(name):
     CURRENT = name; p = _PALETTES[name]
     MAIN_QSS = """
 QMainWindow { background: qlineargradient(x1:0,y1:0,x2:1,y2:1,stop:0 %(window1)s,stop:0.55 %(window2)s,stop:1 %(window3)s); }
-QWidget#Card { background-color:%(card)s; border:1px solid %(card_border)s; border-radius:18px; }
-QWidget#Header { background:qlineargradient(x1:0,y1:0,x2:1,y2:0,stop:0 %(surface_raised)s,stop:1 %(surface)s); border:1px solid %(card_border)s; border-radius:16px; }
-QWidget#Panel { background-color:%(surface)s; border:1px solid %(card_border)s; border-radius:14px; }
+QWidget#Card { background:transparent; border:none; border-radius:0px; }
+QWidget#Header { background:qlineargradient(x1:0,y1:0,x2:1,y2:0,stop:0 %(surface_raised)s,stop:1 %(surface)s); border:none; border-radius:16px; }
+QWidget#Panel { background-color:%(surface)s; border:none; border-radius:0px; }
 QLabel#Brand { color:%(text)s; font-size:20px; font-weight:800; letter-spacing:1px; }
 QLabel#Subtitle { color:%(text_dim)s; font-size:12px; }
 QLabel#StatusPill { color:%(success)s; background-color:rgba(88,214,163,0.10); border:1px solid rgba(88,214,163,0.30); border-radius:12px; padding:6px 12px; font-size:12px; font-weight:700; }
@@ -37,6 +37,7 @@ QStatusBar { background-color:%(window1)s; color:%(text_dim)s; border-top:1px so
 QToolTip { background-color:%(dialog_bg)s; color:%(dialog_text)s; border:1px solid %(border)s; padding:7px 10px; border-radius:7px; }
 QSplitter::handle { background:%(card_border)s; }
 QSplitter::handle:hover { background:%(accent)s; }
+* { font-family: "Custom"; }
 """ % p
     INPUT_QSS = """
 QLineEdit, QTextEdit, QTextBrowser, QSpinBox, QComboBox { background-color:%(input_bg)s; color:%(text)s; border:1px solid %(border)s; border-radius:10px; padding:9px 12px; font-size:14px; selection-background-color:%(accent)s; selection-color:white; }
@@ -48,9 +49,8 @@ QTextEdit#QuestionBox:focus { border:1px solid %(accent)s; background-color:%(in
 QSpinBox { color:%(text)s; }
 QSpinBox::up-button, QSpinBox::down-button { background-color:%(border)s; border:none; width:17px; }
 QComboBox QAbstractItemView { background-color:%(input_bg)s; color:%(text)s; selection-background-color:%(accent2)s; border:1px solid %(border)s; }
+* { font-family: "Custom"; }
 """ % p
-    # Градиент кнопок сделан мягче: верх и низ близки по тону,
-    # «объём» почти не читается, hover ещё спокойнее.
     BUTTON_QSS = """
 QPushButton, QToolButton { background:qlineargradient(x1:0,y1:0,x2:0,y2:1,stop:0 #9a7bff,stop:1 #8a6bf0); color:white; border:none; border-radius:10px; padding:10px 16px; font-size:14px; font-weight:700; }
 QPushButton:hover, QToolButton:hover { background:qlineargradient(x1:0,y1:0,x2:0,y2:1,stop:0 #a892ff,stop:1 #9a7bff); }
@@ -58,12 +58,10 @@ QPushButton:pressed, QToolButton:pressed { background:#8060ec; padding-top:11px;
 QPushButton:disabled, QToolButton:disabled { background:%(scroll_handle)s; color:%(text_dim)s; }
 QPushButton:checked, QToolButton:checked { background:qlineargradient(x1:0,y1:0,x2:0,y2:1,stop:0 %(warm)s,stop:1 #e5a91b); color:#14142b; }
 QToolButton::menu-indicator { image: none; }
+* { font-family: "Custom"; }
 """ % p
     LABEL_QSS = "QLabel { color:%(text)s; font-size:14px; }" % p
     HINT_QSS = "QLabel { color:%(text_dim)s; font-size:12px; }" % p
-    # Список PDF: никаких вторых выделений и полосок.
-    # outline:0 убирает фокусную рамку, :selected:!active приравнен
-    # к активному, border:none убирает тонкую полоску.
     TABLE_QSS = """
 QTableWidget { background-color:%(input_bg)s; color:%(text)s; alternate-background-color:%(surface)s; gridline-color:%(card_border)s; border:1px solid %(border)s; border-radius:10px; font-size:13px; }
 QHeaderView::section { background-color:%(header)s; color:%(text)s; border:none; padding:8px; font-weight:700; }

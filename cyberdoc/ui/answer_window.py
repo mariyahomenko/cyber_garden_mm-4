@@ -75,6 +75,9 @@ class AnswerWindow(QtWidgets.QMainWindow):
         for button in (self.btn_zoom_out, self.btn_zoom_in):
             button.setStyleSheet(theme.BUTTON_QSS)
         self.question_label.setStyleSheet(theme.LABEL_QSS)
+        self.zoom_label.setStyleSheet(
+            "QLabel { color:%s; font-size:13px; font-weight:700; }"
+            % theme.TEXT_COLOR)
         if self._entry:
             self.set_entry(self._entry)
 
@@ -112,32 +115,25 @@ class AnswerWindow(QtWidgets.QMainWindow):
         self.output.verticalScrollBar().setValue(0)
 
     def _zoom(self, delta):
-        self._zoom_factor = max(0.65, min(2.4, self._zoom_factor * (1.12 ** delta)))
-        self._apply_zoom()
+        if delta > 0:
+            self.output.zoomIn(1)
+        else:
+            self.output.zoomOut(1)
+        try:
+            self.zoom_label.setText("%d%%" % round(
+                self.output.currentFont().pointSizeF() / 10.0 * 100))
+        except Exception:
+            self.zoom_label.setText("100%")
 
     def _reset_zoom(self):
-        self._zoom_factor = 1.0
-        self._apply_zoom()
+        self.output.setHtml(self._base_html)
+        self.zoom_label.setText("100%")
 
     def _apply_zoom(self):
-        # Мы пересобираем HTML, потому что QTextEdit.zoomIn не масштабирует
-        # встроенные CSS-размеры и изображения формул.
         if not self._base_html:
             return
-        factor = self._zoom_factor
-        def scale(match):
-            value = float(match.group(1)) * factor
-            return "font-size:%0.2f%s" % (value, match.group(2))
-        html = re.sub(r"font-size\s*:\s*([0-9.]+)(px|pt)", scale,
-                      self._base_html, flags=re.I)
-        def scale_width(match):
-            value = float(match.group(1)) * factor
-            return "width:%0.2fpx" % value
-        html = re.sub(r"width\s*:\s*([0-9.]+)px", scale_width,
-                      html, flags=re.I)
-        html = re.sub(r"(<body[^>]*>)", r"\1<style>body{font-size:%0.2fpx}</style>" % (14 * factor), html, count=1, flags=re.I)
-        self.output.setHtml(html)
-        self.zoom_label.setText("%d%%" % round(factor * 100))
+        self.output.setHtml(self._base_html)
+        self.zoom_label.setText("100%")
 
     def _on_anchor_clicked(self, url):
         self.link_clicked.emit(url)
@@ -248,8 +244,6 @@ class AnswerWindow(QtWidgets.QMainWindow):
         self._set_match_ui()
 
     def closeEvent(self, event):
-        # Закрытие окна ответа снимает все его выделения —
-        # при повторном открытии чистое окно.
         self._matches = []
         self._match_idx = -1
         self.answer_search.clear()

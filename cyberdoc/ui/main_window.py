@@ -51,7 +51,7 @@ class PDFSearchApp(QtWidgets.QMainWindow):
         header_layout = QtWidgets.QHBoxLayout(self.header)
         header_layout.setContentsMargins(18, 6, 18, 6)
         header_layout.setSpacing(12)
-        self.header.setFixedHeight(44)
+        self.header.setFixedHeight(64)
         brand_box = QtWidgets.QHBoxLayout()
         brand_box.setSpacing(10)
         self.brand_label = QtWidgets.QLabel("CYBERDOC")
@@ -260,28 +260,28 @@ class PDFSearchApp(QtWidgets.QMainWindow):
     # ----------------------------------------------------------------
     # событие: клик по пустому месту списка документов
     # ----------------------------------------------------------------
-        def eventFilter(self, obj, event):
-            # Клик по пустому месту списка документов снимает выделение.
-            docs_list = getattr(self, "docs_list", None)
-            if (docs_list is not None
-                    and obj is docs_list.viewport()
-                    and event.type() == QtCore.QEvent.MouseButtonPress
-                    and docs_list.itemAt(event.pos()) is None):
-                docs_list.clearSelection()
-                docs_list.setCurrentRow(-1)
+    def eventFilter(self, obj, event):
+        # Клик по пустому месту списка документов снимает выделение.
+        docs_list = getattr(self, "docs_list", None)
+        if (docs_list is not None
+                and obj is docs_list.viewport()
+                and event.type() == QtCore.QEvent.MouseButtonPress
+                and docs_list.itemAt(event.pos()) is None):
+            docs_list.clearSelection()
+            docs_list.setCurrentRow(-1)
 
-            # Enter в поле вопроса отправляет вопрос (Shift+Enter — перенос).
-            input_question = getattr(self, "input_question", None)
-            if (input_question is not None
-                    and obj is input_question
-                    and event.type() == QtCore.QEvent.KeyPress):
-                if event.key() in (QtCore.Qt.Key_Return, QtCore.Qt.Key_Enter):
-                    if event.modifiers() & QtCore.Qt.ShiftModifier:
-                        return False
-                    self.ask_question()
-                    return True
+        # Enter в поле вопроса отправляет вопрос (Shift+Enter — перенос).
+        input_question = getattr(self, "input_question", None)
+        if (input_question is not None
+                and obj is input_question
+                and event.type() == QtCore.QEvent.KeyPress):
+            if event.key() in (QtCore.Qt.Key_Return, QtCore.Qt.Key_Enter):
+                if event.modifiers() & QtCore.Qt.ShiftModifier:
+                    return False
+                self.ask_question()
+                return True
 
-            return super().eventFilter(obj, event)
+        return super().eventFilter(obj, event)
 
     # ----------------------------------------------------------------
     # тема
@@ -293,10 +293,10 @@ class PDFSearchApp(QtWidgets.QMainWindow):
             "QLabel { color:%s; font-size:17px; font-weight:800; }"
             % theme.TEXT_COLOR)
         self.docs_subtitle.setStyleSheet(theme.HINT_QSS)
-        self.brand_label.setStyleSheet("QLabel { color:%s; font-size:16px; font-weight:800; letter-spacing:1px; }" % theme.TEXT_COLOR)
-        self.subtitle_label.setStyleSheet("QLabel { color:%s; font-size:10px; }" % theme.TEXT_COLOR)
-        self.header_meta.setStyleSheet("QLabel { color:%s; font-size:12px; }" % theme.TEXT_COLOR)
-        self.header_status.setStyleSheet("QLabel#StatusPill { color:%s; background:rgba(88,214,163,0.10); border:1px solid rgba(88,214,163,0.30); border-radius:12px; padding:6px 12px; font-size:12px; font-weight:700; }" % ("#58d6a3" if theme.current_theme()=="dark" else "#218b69"))
+        self.brand_label.setStyleSheet("QLabel { color:%s; font-size:20px; font-weight:800; letter-spacing:1px; }" % theme.TEXT_COLOR)
+        self.subtitle_label.setStyleSheet("QLabel { color:%s; font-size:13px; }" % theme.TEXT_COLOR)
+        self.header_meta.setStyleSheet("QLabel { color:%s; font-size:15px; }" % theme.TEXT_COLOR)
+        self.header_status.setStyleSheet("QLabel#StatusPill { color:%s; background:rgba(88,214,163,0.10); border:1px solid rgba(88,214,163,0.30); border-radius:12px; padding:8px 14px; font-size:14px; font-weight:700; }" % ("#58d6a3" if theme.current_theme()=="dark" else "#218b69"))
         for w in (self.docs_list, self.docs_search, self.input_question,
                   self.output):
             w.setStyleSheet(theme.INPUT_QSS)
