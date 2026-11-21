@@ -3,26 +3,16 @@ from PyQt5 import QtWidgets
 
 THEMES = ("dark", "light")
 _PALETTES = {
-    "dark": {
-        "window1":"#0f1222", "window2":"#151a31", "window3":"#0b0e1c",
-        "card":"#181e36", "card_border":"#2c3557", "surface":"#1d2541",
-        "surface_raised":"#252f50", "input_bg":"#202844", "input_bg_focus":"#263052",
-        "text":"#f1f3ff", "text_dim":"#98a1c3", "border":"#364263",
-        "scroll_bg":"#151b31", "scroll_handle":"#4b5b89", "header":"#252f50",
-        "view_bg":"#101528", "accent":"#9a7bff", "accent2":"#6548d9",
-        "accent3":"#55b6ff", "success":"#58d6a3", "warm":"#ffd166",
-        "dialog_bg":"#202844", "dialog_text":"#f1f3ff",
-    },
-    "light": {
-        "window1":"#edf0fa", "window2":"#f7f8fd", "window3":"#e5e9f5",
-        "card":"#ffffff", "card_border":"#d5dced", "surface":"#f6f7fc",
-        "surface_raised":"#eef0fb", "input_bg":"#ffffff", "input_bg_focus":"#f4f2ff",
-        "text":"#232743", "text_dim":"#68708e", "border":"#cbd2e4",
-        "scroll_bg":"#e6eaf5", "scroll_handle":"#aab5d3", "header":"#e9ecf8",
-        "view_bg":"#dfe4f0", "accent":"#8063ed", "accent2":"#5d43ce",
-        "accent3":"#258bd1", "success":"#218b69", "warm":"#c78900",
-        "dialog_bg":"#ffffff", "dialog_text":"#232743",
-    },
+"dark": {
+    "window1":"#0f1222", "window2":"#151a31", "window3":"#0b0e1c",
+    "card":"#181e36", "card_border":"#2c3557", "surface":"#1d2541",
+    "surface_raised":"#252f50", "input_bg":"#202844", "input_bg_focus":"#263052",
+    "text":"#f1f3ff", "text_dim":"#98a1c3", "border":"#364263",
+    "scroll_bg":"#151b31", "scroll_handle":"#4b5b89", "header":"#252f50",
+    "view_bg":"#101528", "accent":"#9a7bff", "accent2":"#6548d9",
+    "accent3":"#55b6ff", "success":"#58d6a3", "warm":"#ffd166",
+    "dialog_bg":"#202844", "dialog_text":"#f1f3ff",
+},
 }
 CURRENT = "dark"
 
@@ -59,23 +49,31 @@ QSpinBox { color:%(text)s; }
 QSpinBox::up-button, QSpinBox::down-button { background-color:%(border)s; border:none; width:17px; }
 QComboBox QAbstractItemView { background-color:%(input_bg)s; color:%(text)s; selection-background-color:%(accent2)s; border:1px solid %(border)s; }
 """ % p
+    # Градиент кнопок сделан мягче: верх и низ близки по тону,
+    # «объём» почти не читается, hover ещё спокойнее.
     BUTTON_QSS = """
-QPushButton { background:qlineargradient(x1:0,y1:0,x2:0,y2:1,stop:0 %(accent)s,stop:1 %(accent2)s); color:white; border:none; border-radius:10px; padding:10px 16px; font-size:14px; font-weight:700; }
-QPushButton:hover { background:qlineargradient(x1:0,y1:0,x2:0,y2:1,stop:0 #ae97ff,stop:1 %(accent)s); }
-QPushButton:pressed { background:%(accent2)s; padding-top:11px; }
-QPushButton:disabled { background:%(scroll_handle)s; color:%(text_dim)s; }
-QPushButton:checked { background:qlineargradient(x1:0,y1:0,x2:0,y2:1,stop:0 %(warm)s,stop:1 #e5a91b); color:#14142b; }
+QPushButton, QToolButton { background:qlineargradient(x1:0,y1:0,x2:0,y2:1,stop:0 #9a7bff,stop:1 #8a6bf0); color:white; border:none; border-radius:10px; padding:10px 16px; font-size:14px; font-weight:700; }
+QPushButton:hover, QToolButton:hover { background:qlineargradient(x1:0,y1:0,x2:0,y2:1,stop:0 #a892ff,stop:1 #9a7bff); }
+QPushButton:pressed, QToolButton:pressed { background:#8060ec; padding-top:11px; }
+QPushButton:disabled, QToolButton:disabled { background:%(scroll_handle)s; color:%(text_dim)s; }
+QPushButton:checked, QToolButton:checked { background:qlineargradient(x1:0,y1:0,x2:0,y2:1,stop:0 %(warm)s,stop:1 #e5a91b); color:#14142b; }
+QToolButton::menu-indicator { image: none; }
 """ % p
     LABEL_QSS = "QLabel { color:%(text)s; font-size:14px; }" % p
     HINT_QSS = "QLabel { color:%(text_dim)s; font-size:12px; }" % p
+    # Список PDF: никаких вторых выделений и полосок.
+    # outline:0 убирает фокусную рамку, :selected:!active приравнен
+    # к активному, border:none убирает тонкую полоску.
     TABLE_QSS = """
 QTableWidget { background-color:%(input_bg)s; color:%(text)s; alternate-background-color:%(surface)s; gridline-color:%(card_border)s; border:1px solid %(border)s; border-radius:10px; font-size:13px; }
 QHeaderView::section { background-color:%(header)s; color:%(text)s; border:none; padding:8px; font-weight:700; }
 QTableWidget::item:selected { background-color:%(accent2)s; }
-QListWidget, QTreeWidget { background-color:%(input_bg)s; color:%(text)s; border:1px solid %(border)s; border-radius:10px; font-size:13px; padding:5px; }
-QListWidget::item, QTreeWidget::item { padding:9px 10px; border-radius:7px; margin:2px 0; }
+QListWidget, QTreeWidget { background-color:%(input_bg)s; color:%(text)s; border:1px solid %(border)s; border-radius:10px; font-size:13px; padding:5px; outline:0; }
+QListWidget::item, QTreeWidget::item { padding:9px 10px; border-radius:7px; margin:2px 0; border:none; }
 QListWidget::item:hover, QTreeWidget::item:hover { background-color:%(surface_raised)s; }
-QListWidget::item:selected, QTreeWidget::item:selected { background-color:%(accent2)s; color:white; }
+QListWidget::item:selected, QTreeWidget::item:selected { background-color:%(accent2)s; color:white; border:none; outline:0; }
+QListWidget::item:selected:!active, QTreeWidget::item:selected:!active { background-color:%(accent2)s; color:white; }
+QListWidget::item:focus, QTreeWidget::item:focus { outline:0; border:none; }
 QTabWidget::pane { border:1px solid %(border)s; border-radius:10px; background:%(surface)s; }
 QTabBar::tab { background:%(input_bg)s; color:%(text_dim)s; padding:9px 16px; border-top-left-radius:8px; border-top-right-radius:8px; margin-right:3px; }
 QTabBar::tab:selected { background:%(accent2)s; color:white; }
@@ -108,8 +106,8 @@ QPushButton:hover { background:%(accent2)s; border-color:%(accent)s; color:white
 QPushButton:pressed { background:%(accent2)s; }
 QPushButton:disabled { background:%(input_bg)s; border-color:%(border)s; color:%(text_dim)s; }
 QPushButton:checked { background:%(warm)s; color:#14142b; border-color:%(warm)s; }
-QPushButton#AskButton { background:qlineargradient(x1:0,y1:0,x2:0,y2:1,stop:0 %(accent)s,stop:1 %(accent2)s); border:none; color:white; }
-QPushButton#AskButton:hover { background:qlineargradient(x1:0,y1:0,x2:0,y2:1,stop:0 #b29cff,stop:1 %(accent)s); }
+QPushButton#AskButton { background:qlineargradient(x1:0,y1:0,x2:0,y2:1,stop:0 #9a7bff,stop:1 #8a6bf0); border:none; color:white; }
+QPushButton#AskButton:hover { background:qlineargradient(x1:0,y1:0,x2:0,y2:1,stop:0 #a892ff,stop:1 #9a7bff); }
 QPushButton#AskButton:disabled { background:%(scroll_handle)s; }
 """ % p
     CHECK_QSS = """

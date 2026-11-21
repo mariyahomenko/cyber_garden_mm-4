@@ -5,7 +5,7 @@ from PyQt5 import QtWidgets, QtCore, QtGui
 from .. import theme
 from ..client import make_client, build_prompt, PROVIDERS
 from ..parser import parse_answer, PLACEHOLDER_RE
-from ..pdfdoc import PDFDocument, MODE_PHRASE, MODE_WORDS
+from ..pdfdoc import PDFDocument, MODE_PHRASE, MODE_WORDS, MODE_SUBSTRING
 from ..renderer import render_answer_html
 from ..export_utils import export_json, export_tz_json
 from .research_dialog import ResearchDialog
@@ -118,10 +118,10 @@ class PDFSearchApp(QtWidgets.QMainWindow):
         self.docs_list.setSelectionMode(
             QtWidgets.QAbstractItemView.ExtendedSelection)
         self.docs_list.currentItemChanged.connect(self._doc_selected)
-        self.docs_list.itemSelectionChanged.connect(
-            self._update_search_placeholder)
         # PDF открывается двойным кликом по имени файла
         self.docs_list.itemDoubleClicked.connect(self._doc_double_clicked)
+        # Клик по пустому месту снимает выделение (и «текущий» элемент)
+        self.docs_list.viewport().installEventFilter(self)
         dbv.addWidget(self.docs_list, 1)
 
         db = QtWidgets.QHBoxLayout()
@@ -135,14 +135,15 @@ class PDFSearchApp(QtWidgets.QMainWindow):
         self.btn_del_doc.clicked.connect(self.remove_current_doc)
         db.addWidget(self.btn_del_doc)
 
-        # «Загрузить PDF»: под «+ PDF», над поиском по всем файлам
         self.btn_load = QtWidgets.QPushButton("Открыть окно PDF")
         self.btn_load.clicked.connect(lambda: self.open_pdf_viewer())
         dbv.addWidget(self.btn_load)
 
+        # Фильтр списка файлов по имени (живой, без Enter)
         self.docs_search = QtWidgets.QLineEdit()
-        self.docs_search.setPlaceholderText("Поиск по документам...")
-        self.docs_search.returnPressed.connect(self.search_all_docs)
+        self.docs_search.setPlaceholderText("Фильтр по имени файла...")
+        self.docs_search.setClearButtonEnabled(True)
+        self.docs_search.textChanged.connect(self._filter_docs_by_name)
         dbv.addWidget(self.docs_search)
 
         self.splitter.addWidget(self.docs_panel)
@@ -155,7 +156,6 @@ class PDFSearchApp(QtWidgets.QMainWindow):
         layout.setSpacing(8)
 
         # Поиск по ответу: скрыт, открывается кнопкой-лупой (или Ctrl+F).
-        # Стрелки и счётчик лежат внутри поля, текст под них не заезжает.
         self.answer_search = SearchLineEdit("Поиск по ответу...")
         self.answer_search.textChanged.connect(self._on_answer_search_changed)
         self.answer_search.returnPressed.connect(self.search_answer_main)
@@ -256,6 +256,32 @@ class PDFSearchApp(QtWidgets.QMainWindow):
         self._update_header_status()
         self._restore_session()
         self._center_on_screen()
+
+    # ----------------------------------------------------------------
+    # событие: клик по пустому месту списка документов
+    # ----------------------------------------------------------------
+        def eventFilter(self, obj, event):
+            # Клик по пустому месту списка документов снимает выделение.
+            docs_list = getattr(self, "docs_list", None)
+            if (docs_list is not None
+                    and obj is docs_list.viewport()
+                    and event.type() == QtCore.QEvent.MouseButtonPress
+                    and docs_list.itemAt(event.pos()) is None):
+                docs_list.clearSelection()
+                docs_list.setCurrentRow(-1)
+
+            # Enter в поле вопроса отправляет вопрос (Shift+Enter — перенос).
+            input_question = getattr(self, "input_question", None)
+            if (input_question is not None
+                    and obj is input_question
+                    and event.type() == QtCore.QEvent.KeyPress):
+                if event.key() in (QtCore.Qt.Key_Return, QtCore.Qt.Key_Enter):
+                    if event.modifiers() & QtCore.Qt.ShiftModifier:
+                        return False
+                    self.ask_question()
+                    return True
+
+            return super().eventFilter(obj, event)
 
     # ----------------------------------------------------------------
     # тема
@@ -394,18 +420,40 @@ class PDFSearchApp(QtWidgets.QMainWindow):
         if path in self.docs:
             self._switch_doc(path)
             return
+
+        # Блокируем интерфейс на время загрузки
+        QtWidgets.QApplication.setOverrideCursor(QtCore.Qt.WaitCursor)
         try:
             doc = PDFDocument(path)
+            if len(doc) == 0:
+                raise ValueError("Документ не содержит страниц (возможно, файл повреждён).")
         except Exception as e:
-            QtWidgets.QMessageBox.critical(self, "Ошибка PDF", str(e))
+            QtWidgets.QApplication.restoreOverrideCursor()
+            QtWidgets.QMessageBox.critical(
+                self, "Ошибка PDF",
+                f"Не удалось открыть файл:\n{path}\n\nПричина: {e}\n\n"
+                f"Попробуйте открыть файл в другом просмотрщике и пересохранить его."
+            )
             return
+        finally:
+            QtWidgets.QApplication.restoreOverrideCursor()
+
+        # Добавляем документ в список и словарь
         self.docs[path] = doc
         it = QtWidgets.QListWidgetItem(doc.name)
         it.setData(QtCore.Qt.UserRole, path)
         it.setToolTip(path)
         self.docs_list.addItem(it)
+
+        # Сбрасываем фильтр, чтобы новый файл не оказался скрытым
+        if self.docs_search.text():
+            self.docs_search.clear()
+
+        # Переключаемся на него и обновляем статус
         self._switch_doc(path)
         self._update_header_status()
+
+        # Выводим приветствие в поле ответа
         self.output.setHtml(
             '<div style="color:%s;"><b>Загружено:</b> %s<br>'
             'Страниц: %d. Можно задавать вопросы.</div>'
@@ -424,14 +472,12 @@ class PDFSearchApp(QtWidgets.QMainWindow):
                 if it.data(QtCore.Qt.UserRole) != path:
                     continue
                 if multi and it.isSelected():
-                    # не сбрасываем выбор нескольких файлов
                     self.docs_list.setCurrentItem(
                         it, QtCore.QItemSelectionModel.NoUpdate)
                 else:
                     self.docs_list.setCurrentItem(it)
                 break
             self.docs_list.blockSignals(False)
-            self._update_search_placeholder()
         self.setWindowTitle("%s — %s" % (APP_NAME, doc.name))
         if (self.viewer is not None and self.viewer.isVisible()
                 and self.viewer.pdf_doc is not doc):
@@ -465,51 +511,31 @@ class PDFSearchApp(QtWidgets.QMainWindow):
                     "%s — AI-ассистент по научным статьям" % APP_NAME)
             self.docs_list.takeItem(self.docs_list.row(item))
             self.docs.pop(path, None)
-        self._update_search_placeholder()
+        # Сбрасываем фильтр, если он скрывал оставшиеся файлы
+        if self.docs_search.text():
+            self.docs_search.clear()
         self._update_header_status()
 
     def current_doc(self):
         return self.docs.get(self.current_path)
 
-    # ---------------- поиск по файлам ----------------
-    def _search_scope(self):
-        """Выбрано несколько файлов — ищем в них, иначе — во всех."""
-        sel = [it.data(QtCore.Qt.UserRole)
-               for it in self.docs_list.selectedItems()]
-        if len(sel) > 1:
-            return [p for p in sel if p in self.docs]
-        return list(self.docs.keys())
+    # ---------------- фильтр списка по имени файла ----------------
+    def _filter_docs_by_name(self, text):
+        """Скрывает документы, чьё имя файла не содержит подстроку."""
+        q = (text or "").strip().lower()
+        for i in range(self.docs_list.count()):
+            item = self.docs_list.item(i)
+            if item is None:
+                continue
+            path = item.data(QtCore.Qt.UserRole) or ""
+            name = os.path.basename(str(path)).lower()
+            if not name:
+                name = (item.text() or "").lower()
+            item.setHidden(bool(q) and q not in name)
 
     def _update_search_placeholder(self):
-        n = len(self.docs_list.selectedItems())
-        if n > 1:
-            self.docs_search.setPlaceholderText("Искать в выбранных (%d)..." % n)
-        else:
-            self.docs_search.setPlaceholderText("Поиск по документам...")
-
-    def search_all_docs(self):
-        q = self.docs_search.text().strip()
-        if not q or not self.docs:
-            return
-        scope = self._search_scope()
-        counts = {}
-        for path in scope:
-            try:
-                n = len(self.docs[path].search_exact_ci(q))
-            except Exception:
-                n = 0
-            if n:
-                counts[path] = n
-        if counts:
-            best_path = max(counts, key=counts.get)
-            self._switch_doc(best_path)
-            self.open_pdf_viewer(0, search_query=q)
-        else:
-            where = ("ни в одном из выбранных документов"
-                     if len(self.docs_list.selectedItems()) > 1
-                     else "ни в одном документе")
-            QtWidgets.QMessageBox.information(
-                self, "Поиск", "«%s» не найдено %s." % (q, where))
+        # Поиск по содержимому всех файлов удалён — подсказка постоянная.
+        self.docs_search.setPlaceholderText("Фильтр по имени файла...")
 
     # ================================================================
     # PDF вьюер
@@ -544,16 +570,6 @@ class PDFSearchApp(QtWidgets.QMainWindow):
     # ================================================================
     # вопрос → ответ
     # ================================================================
-    def eventFilter(self, obj, event):
-        if (obj is self.input_question
-                and event.type() == QtCore.QEvent.KeyPress):
-            if event.key() in (QtCore.Qt.Key_Return, QtCore.Qt.Key_Enter):
-                if event.modifiers() & QtCore.Qt.ShiftModifier:
-                    return False
-                self.ask_question()
-                return True
-        return super().eventFilter(obj, event)
-
     def open_research(self):
         if self._research_dialog is None:
             self._research_dialog = ResearchDialog(self.docs, self)
@@ -677,7 +693,6 @@ class PDFSearchApp(QtWidgets.QMainWindow):
         if not (0 <= self.history_idx < len(self.history)):
             return
         if self.answer_window is None or not self.answer_window.isVisible():
-            # Без родителя: независимое окно, поднимается кликом
             self.answer_window = AnswerWindow(parent=None)
             self.answer_window.link_clicked.connect(self.on_link_clicked)
             self.answer_window.set_entry(self.history[self.history_idx])
@@ -715,16 +730,15 @@ class PDFSearchApp(QtWidgets.QMainWindow):
                 return
             if pno is not None:
                 doc.clear_ai_highlight()
-                # подсвечиваем на открываемой странице ВСЕ вхождения
-                # запроса поиска по PDF (если поиск в окне просмотра активен)
                 q = ""
                 if (self.viewer is not None and self.viewer.isVisible()
                         and self.viewer.pdf_doc is doc):
                     q = self.viewer.search_input.text().strip()
                 if q:
-                    rects = doc.find_all_on_page(
-                        pno, q, self.viewer.search_mode.currentData(),
-                        self.viewer.case_check.isChecked())
+                    case_sensitive = self.viewer.act_case.isChecked()
+                    whole_word = self.viewer.act_whole.isChecked()
+                    mode = MODE_WORDS if whole_word else (MODE_PHRASE if " " in q else MODE_SUBSTRING)
+                    rects = doc.find_all_on_page(pno, q, mode, case_sensitive)
                     if rects:
                         doc.set_ai_highlights([(pno, r) for r in rects])
                 self.open_pdf_viewer(pno,
@@ -743,13 +757,11 @@ class PDFSearchApp(QtWidgets.QMainWindow):
             pno = doc.to_pdf_index(a["page"])
             if pno is None:
                 return
-            # Берём сохранённый rect, иначе резолвим заново
             rect = None
             if a.get("rect"):
                 rect = fitz.Rect(*a["rect"])
             else:
                 rect = doc.resolve_anchor(a["page"], a["quote"])
-            # Подсвечиваем ВСЕ вхождения цитаты якоря на странице
             rects = []
             if a.get("quote"):
                 rects = doc.find_all_on_page(pno, a["quote"])
@@ -949,7 +961,6 @@ class PDFSearchApp(QtWidgets.QMainWindow):
             for entry in payload["answers"]:
                 if not isinstance(entry, dict):
                     raise ValueError("Каждый ответ должен быть объектом JSON")
-                # Keep the exported answer shape; absent optional fields are safe defaults.
                 item = dict(entry)
                 item.setdefault("text", "")
                 item.setdefault("formulas", [])
@@ -1036,4 +1047,3 @@ class PDFSearchApp(QtWidgets.QMainWindow):
         if self.answer_window is not None:
             self.answer_window.close()
         super().closeEvent(event)
-

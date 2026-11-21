@@ -1,7 +1,7 @@
 """Правая панель: извлечённые сущности, сводка, проверки, поиск по документу.
 
 Реализует кейс: извлечение данных из PDF, привязка к странице,
-нормализация, проверка согласованности, фильтры и RAG-поиск."""
+нормализация, проверка согласованности, поиск дубликатов и RAG-поиск."""
 
 import re
 
@@ -15,6 +15,24 @@ NUM_UNIT_RE = re.compile(
     r"(мВт/см²|Вт/м²|Вт/см²|мВт|кВт|Вт|нА|мкА|мА|А|мВ|кВ|В|"
     r"кОм|МОм|Ом|нм|мкм|мм|см²|см|м²|эВ|кДж|Дж|К|°С|%)",
     re.UNICODE)
+
+
+def _to_float(value):
+    try:
+        return float(str(value).replace(",", "."))
+    except (TypeError, ValueError):
+        return None
+
+
+def _near(a, b):
+    """Близость чисел: 2 % отн. или 0.1 абс. — как в сопоставлении ТЗ."""
+    fa, fb = _to_float(a), _to_float(b)
+    if fa is None or fb is None:
+        return False
+    if fa == 0 and fb == 0:
+        return True
+    denom = max(abs(fa), abs(fb)) or 1.0
+    return abs(fa - fb) / denom <= 0.02 or abs(fa - fb) <= 0.1
 
 
 class EntityPanel(QtWidgets.QWidget):
@@ -46,7 +64,7 @@ class EntityPanel(QtWidgets.QWidget):
         ev.addLayout(flt)
         self.type_box = QtWidgets.QComboBox()
         self.type_box.setStyleSheet(theme.INPUT_QSS)
-        self.type_box.addItems(["все", "числа", "формулы"])
+        self.type_box.addItems(["все", "числа", "формулы", "дубликаты"])
         self.type_box.currentIndexChanged.connect(self._apply_filters)
         flt.addWidget(self.type_box)
 
@@ -76,38 +94,39 @@ class EntityPanel(QtWidgets.QWidget):
         self.page_to.valueChanged.connect(self._apply_filters)
         rng.addWidget(self.page_to)
 
-        self.table = QtWidgets.QTableWidget(0, 5)
+        self.table = QtWidgets.QTableWidget(0, 7)
         self.table.setHorizontalHeaderLabels(
-            ["Тип", "Параметр", "Значение", "Ед.", "Стр."])
+            ["Тип", "Параметр", "Значение", "Ед.", "Стр.", "Дубликат", "Где"])
         self.table.setColumnWidth(0, 60)
-        self.table.setColumnWidth(1, 110)
-        self.table.setColumnWidth(3, 50)
+        self.table.setColumnWidth(1, 100)
+        self.table.setColumnWidth(3, 45)
         self.table.setColumnWidth(4, 45)
+        self.table.setColumnWidth(5, 70)
         self.table.verticalHeader().setVisible(False)
         self.table.setEditTriggers(QtWidgets.QAbstractItemView.NoEditTriggers)
         self.table.setSelectionBehavior(QtWidgets.QAbstractItemView.SelectRows)
         self.table.doubleClicked.connect(self._on_jump)
         ev.addWidget(self.table, 1)
 
-        hint = QtWidgets.QLabel("Двойной клик — открыть место в PDF")
+        hint = QtWidgets.QLabel(
+            "Двойной клик — открыть место в PDF. «Дубликат» — совпадает "
+            "с другой записью (та же статья или другая).")
+        hint.setWordWrap(True)
         hint.setStyleSheet(theme.HINT_QSS)
         ev.addWidget(hint)
 
         self.tabs.addTab(ent, "Сущности")
 
-        # ---------- вкладка: сводка ----------
         self.summary_view = QtWidgets.QTextBrowser()
         self.summary_view.setStyleSheet(theme.INPUT_QSS)
         self.summary_view.setOpenExternalLinks(False)
         self.tabs.addTab(self.summary_view, "Сводка")
 
-        # ---------- вкладка: проверки ----------
         self.checks_view = QtWidgets.QTextBrowser()
         self.checks_view.setStyleSheet(theme.INPUT_QSS)
         self.checks_view.setOpenExternalLinks(False)
         self.tabs.addTab(self.checks_view, "Проверки")
 
-        # ---------- вкладка: поиск по документу (RAG-контекст) ----------
         rag = QtWidgets.QWidget()
         rv = QtWidgets.QVBoxLayout(rag)
         rv.setContentsMargins(4, 4, 4, 4)
@@ -133,13 +152,13 @@ class EntityPanel(QtWidgets.QWidget):
         self.page_to.setValue(first_number + n_pages - 1)
 
     def fill(self, entries):
-        """entries: список dict с ключами text/formulas/anchors/doc."""
+        """entries: список dict с ключами text/formulas/anchors/doc (и path)."""
         self.rows = []
         self._source_text = ""
         for e in entries:
             doc = e.get("doc", "")
+            path = e.get("path") or e.get("doc") or ""
             self._source_text += "\n" + (e.get("text") or "")
-            # Разбор страниц: [стр. N]
             for chunk in re.split(r"\[(?:стр\.|page)\s*", e.get("text", "")):
                 m = re.match(r"(\d+)\]", chunk)
                 cur_page = int(m.group(1)) if m else None
@@ -151,6 +170,8 @@ class EntityPanel(QtWidgets.QWidget):
                         "unit": nm.group(3),
                         "page": cur_page,
                         "doc": doc,
+                        "path": path,
+                        "duplicate_of": None,
                     })
             for f in e.get("formulas", []):
                 self.rows.append({
@@ -160,10 +181,41 @@ class EntityPanel(QtWidgets.QWidget):
                     "unit": "—",
                     "page": f.get("page"),
                     "doc": doc,
+                    "path": path,
+                    "duplicate_of": None,
                 })
+        self._mark_duplicates()
         self._apply_filters()
         self._rebuild_summary()
         self._rebuild_checks()
+
+    # ============================ дубликаты ============================
+    def _mark_duplicates(self):
+        """Помечает записи, совпадающие по параметру и близкому значению.
+
+        Работает и внутри одной статьи, и между разными файлами —
+        именно этого требует ТЗ (сопоставление результатов).
+        """
+        for i, r in enumerate(self.rows):
+            r["duplicate_of"] = None
+        for i in range(len(self.rows)):
+            for j in range(i + 1, len(self.rows)):
+                a, b = self.rows[i], self.rows[j]
+                if a["type"] != b["type"]:
+                    continue
+                if a["param"].lower() != b["param"].lower():
+                    continue
+                if a["type"] == "число":
+                    if not _near(a["value"], b["value"]):
+                        continue
+                else:
+                    # формулы: сравниваем нормализованный текст
+                    na = re.sub(r"\s+", "", a["value"]).lower()
+                    nb = re.sub(r"\s+", "", b["value"]).lower()
+                    if na != nb:
+                        continue
+                if b["duplicate_of"] is None:
+                    b["duplicate_of"] = i  # индекс оригинала в self.rows
 
     # ============================ фильтры ============================
     def _apply_filters(self, *_args):
@@ -172,10 +224,13 @@ class EntityPanel(QtWidgets.QWidget):
         p_from = self.page_from.value()
         p_to = self.page_to.value()
         shown = []
-        for r in self.rows:
+        for idx, r in enumerate(self.rows):
+            r["_idx"] = idx
             if type_sel == "числа" and r["type"] != "число":
                 continue
             if type_sel == "формулы" and r["type"] != "формула":
+                continue
+            if type_sel == "дубликаты" and r["duplicate_of"] is None:
                 continue
             if text and text not in (r["param"] + " " + r["value"]).lower():
                 continue
@@ -184,22 +239,51 @@ class EntityPanel(QtWidgets.QWidget):
             shown.append(r)
         self.table.setRowCount(len(shown))
         for i, r in enumerate(shown):
-            for j, key in enumerate(("type", "param", "value", "unit", "page")):
-                val = r.get(key)
+            dup_text = ""
+            where_text = ""
+            if r["duplicate_of"] is not None:
+                orig = self.rows[r["duplicate_of"]]
+                dup_text = "строка %d" % (r["duplicate_of"] + 1)
+                where_text = "%s:стр. %s" % (
+                    orig.get("doc") or "?", orig.get("page") or "?")
+            values = [r["type"], r["param"], r["value"], r["unit"],
+                      r["page"], dup_text, where_text]
+            for j, val in enumerate(values):
                 item = QtWidgets.QTableWidgetItem("" if val is None else str(val))
                 item.setData(QtCore.Qt.UserRole, r)
+                if j == 5 and dup_text:
+                    item.setForeground(QtCore.Qt.gray)
                 self.table.setItem(i, j, item)
         self.table.resizeColumnsToContents()
 
     def _on_jump(self, index):
         row = self.table.item(index.row(), 0).data(QtCore.Qt.UserRole)
-        if row:
-            self.jump.emit(row)
+        if not row:
+            return
+        # Двойной клик по дубликату — открываем оригинал
+        if row.get("duplicate_of") is not None:
+            orig = self.rows[row["duplicate_of"]]
+            self.jump.emit({
+                "page": orig.get("page"),
+                "value": orig.get("value", ""),
+                "type": orig.get("type"),
+                "path": orig.get("path"),
+                "doc": orig.get("doc"),
+            })
+            return
+        self.jump.emit({
+            "page": row.get("page"),
+            "value": row.get("value", ""),
+            "type": row.get("type"),
+            "path": row.get("path"),
+            "doc": row.get("doc"),
+        })
 
     # ============================ сводка ============================
     def _rebuild_summary(self):
         nums = [r for r in self.rows if r["type"] == "число"]
         forms = [r for r in self.rows if r["type"] == "формула"]
+        dups = [r for r in self.rows if r["duplicate_of"] is not None]
         units = {}
         params = {}
         for r in nums:
@@ -207,8 +291,9 @@ class EntityPanel(QtWidgets.QWidget):
             params[r["param"]] = params.get(r["param"], 0) + 1
         top_params = sorted(params.items(), key=lambda kv: -kv[1])[:10]
         lines = ["<h3>Сводка по извлечённым данным</h3>",
-                 "<p>Чисел: <b>%d</b> &nbsp; Формул: <b>%d</b></p>"
-                 % (len(nums), len(forms)),
+                 "<p>Чисел: <b>%d</b> &nbsp; Формул: <b>%d</b> &nbsp; "
+                 "Дубликатов: <b>%d</b></p>"
+                 % (len(nums), len(forms), len(dups)),
                  "<h4>Единицы измерения</h4><ul>"]
         for u, c in sorted(units.items(), key=lambda kv: -kv[1]):
             lines.append("<li>%s — %d</li>" % (u, c))
@@ -221,33 +306,28 @@ class EntityPanel(QtWidgets.QWidget):
     # ============================ проверки ============================
     def _rebuild_checks(self):
         nums = [r for r in self.rows if r["type"] == "число"]
-        # Дубли
-        seen = {}
-        dups = []
-        for r in nums:
-            key = (r["param"].lower(), r["value"], r["unit"])
-            if key in seen:
-                dups.append((seen[key], r))
-            else:
-                seen[key] = r
-        # Значения без страницы
+        dups = [(i, r) for i, r in enumerate(self.rows)
+                if r["duplicate_of"] is not None]
         no_page = [r for r in nums if r["page"] is None]
-        # Отрицательные там, где физически не должно быть (пример)
-        negatives = [r for r in nums if r["value"].startswith("-")]
+        negatives = [r for r in nums if str(r["value"]).startswith("-")]
         lines = ["<h3>Проверка согласованности</h3>",
                  "<p>Всего чисел: %d</p>" % len(nums),
-                 "<h4>Дубли параметров: %d</h4>" % len(dups)]
-        for a, b in dups[:10]:
+                 "<h4>Дубликаты: %d</h4>" % len(dups)]
+        for i, r in dups:
+            orig = self.rows[r["duplicate_of"]]
             lines.append(
-                "<p>• %s = %s %s &nbsp; (стр. %s / %s)</p>" % (
-                    a["param"], a["value"], a["unit"], a["page"], b["page"]))
+                "<p>• %s = %s %s — <b>дубликат</b> строки %d "
+                "(%s:стр. %s) → здесь: %s:стр. %s</p>" % (
+                    r["param"], r["value"], r["unit"],
+                    r["duplicate_of"] + 1,
+                    orig.get("doc") or "?", orig.get("page") or "?",
+                    r.get("doc") or "?", r.get("page") or "?"))
         lines.append("<h4>Числа без указания страницы: %d</h4>" % len(no_page))
         lines.append("<h4>Числа с отрицательным знаком: %d</h4>" % len(negatives))
         self.checks_view.setHtml("".join(lines))
 
     # ============================ RAG-поиск ============================
     def set_rag_handler(self, fn):
-        # fn(query) -> list[dict(page, snippet)]
         self.rag_btn.clicked.connect(lambda: self._run_rag(fn))
 
     def _run_rag(self, fn):
@@ -269,7 +349,9 @@ class EntityPanel(QtWidgets.QWidget):
     def _rag_jump(self, item):
         r = item.data(QtCore.Qt.UserRole)
         if r:
-            self.jump.emit({"page": r.get("page"), "value": "", "type": "число"})
+            self.jump.emit({"page": r.get("page"), "value": "",
+                            "type": "число",
+                            "path": r.get("path"), "doc": r.get("doc")})
 
     def rows_for_export(self):
         return list(self.rows)

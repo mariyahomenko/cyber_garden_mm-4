@@ -1,14 +1,35 @@
 import re
 import unicodedata
 from pathlib import Path
-import fitz
+import pymupdf as fitz
 
 try:
     import pytesseract
     from PIL import Image
-    HAS_OCR = True
+    HAS_PYTESSERACT = True
 except Exception:
-    HAS_OCR = False
+    HAS_PYTESSERACT = False
+
+
+def _pymupdf_ocr_works() -> bool:
+    """Проверяем, умеет ли встроенный OCR PyMuPDF (Tesseract-мост)."""
+    try:
+        doc = fitz.open()
+        page = doc.new_page()
+        page.insert_text((72, 72), "test")
+        try:
+            page.get_textpage_ocr(language="eng", dpi=100, full=True)
+            return True
+        except Exception:
+            return False
+        finally:
+            doc.close()
+    except Exception:
+        return False
+
+
+# OCR доступен, если есть PyMuPDF-мост ИЛИ pytesseract+Pillow.
+OCR_AVAILABLE = _pymupdf_ocr_works() or HAS_PYTESSERACT
 
 MODE_PHRASE = "phrase"          # точная фраза целиком
 MODE_WORDS = "words"            # каждое слово запроса (целые слова)
@@ -39,7 +60,8 @@ class PDFDocument:
         self.path = path
         self.name = Path(path).name
         self.doc = fitz.open(path)
-        self.pages_text = [p.get_text("text") for p in self.doc]
+        # Сырой текст (до OCR/колонок) — нужен для has_text_layer.
+        self._raw_pages_text = [p.get_text("text") for p in self.doc]
         self.first_page_number = self._detect_first_page_number()
         self.highlights = {}          # {(pno, rect_tuple): color} — маркеры
         self.search_highlights = {}   # {(pno, rect_tuple): True}
@@ -48,9 +70,9 @@ class PDFDocument:
         self._ai_highlights = []      # [(pno, fitz.Rect)] — подсветки из ответа
         # Колонко-ориентированный текст (для промпта и ранкинга)
         self.pages_text = [self._extract_page_text(p) for p in self.doc]
-        # После сортировки блоков снова подставляем OCR для пустых страниц.
+        # Автоматический OCR пустых страниц (если доступен).
         for i, text in enumerate(self.pages_text):
-            if len(text.strip()) < 20:
+            if len(text.strip()) < 20 and OCR_AVAILABLE:
                 words = self._ocr_page_words(i)
                 if words:
                     self.pages_text[i] = " ".join(
@@ -58,39 +80,52 @@ class PDFDocument:
         self._norm_pages = [_normalize(t) for t in self.pages_text]
         self._layout_cache = {}
 
-    # ==================== OCR СКАНОВ ====================
-    def _ocr_replace_empty_pages(self):
-        """Мы добавляем распознанный текст в индекс, сохраняя исходный скан."""
-        empty = {i for i, t in enumerate(self.pages_text)
-                 if len(t.strip()) < 20}
-        if not empty:
-            return
-        for i in sorted(empty):
-            words = self._ocr_page_words(i)
-            if words:
-                self.pages_text[i] = " ".join(word for *_box, word in words)
+    # ==================== OCR ====================
+    def has_text_layer(self, pno: int) -> bool:
+        """Есть ли у страницы настоящий текстовый слой (не OCR)."""
+        if not (0 <= pno < len(self.doc)):
+            return False
+        raw = (self._raw_pages_text[pno] or "").strip()
+        return len(raw) >= 20
+
+    def ocr_page(self, pno: int) -> str:
+        """Принудительно распознаёт страницу и кладёт текст в pages_text."""
+        if not (0 <= pno < len(self.doc)) or not OCR_AVAILABLE:
+            return ""
+        words = self._ocr_page_words(pno)
+        if not words:
+            return ""
+        text = " ".join(word for *_box, word in words)
+        self.pages_text[pno] = text
+        self._norm_pages[pno] = _normalize(text)
+        # сбрасываем кеш лейаута — координаты могли измениться
+        self._layout_cache.pop(pno, None)
+        return text
 
     def _ocr_page_words(self, pno):
-        """Слова страницы через Tesseract: [(x0,y0,x1,y1,word)]."""
+        """Слова страницы через OCR: [(x0,y0,x1,y1,word)]."""
         page = self.doc[pno]
-        # Мы используем встроенный OCR-мост PyMuPDF без PyTesseract.
-        if not HAS_OCR:
-            try:
-                try:
-                    tp = page.get_textpage_ocr(language="rus+eng", dpi=200, full=True)
-                except Exception:
-                    tp = page.get_textpage_ocr(language="eng", dpi=200, full=True)
-                words = []
-                for x0, y0, x1, y1, word, *_ in tp.extractWORDS():
-                    word = (word or "").strip()
-                    if word:
-                        words.append((x0, y0, x1, y1, word))
-                return words
-            except Exception:
-                return []
-        pix = page.get_pixmap(matrix=fitz.Matrix(2.0, 2.0))
-        img = Image.frombytes("RGB", [pix.width, pix.height], pix.samples)
+        # 1) Встроенный OCR-мост PyMuPDF
         try:
+            try:
+                tp = page.get_textpage_ocr(language="rus+eng", dpi=200, full=True)
+            except Exception:
+                tp = page.get_textpage_ocr(language="eng", dpi=200, full=True)
+            words = []
+            for x0, y0, x1, y1, word, *_ in tp.extractWORDS():
+                word = (word or "").strip()
+                if word:
+                    words.append((x0, y0, x1, y1, word))
+            if words:
+                return words
+        except Exception:
+            pass
+        # 2) pytesseract + Pillow
+        if not HAS_PYTESSERACT:
+            return []
+        try:
+            pix = page.get_pixmap(matrix=fitz.Matrix(2.0, 2.0))
+            img = Image.frombytes("RGB", [pix.width, pix.height], pix.samples)
             try:
                 data = pytesseract.image_to_data(
                     img, output_type=pytesseract.Output.DICT,
@@ -122,8 +157,6 @@ class PDFDocument:
 
     # ==================== КОЛОНКИ ====================
     def _extract_page_text(self, page) -> str:
-        """Текст страницы в порядке чтения: для двухколоночной вёрстки
-        сначала левая колонка, затем правая."""
         try:
             blocks = page.get_text("blocks")
         except Exception:
@@ -143,7 +176,6 @@ class PDFDocument:
                 right.append(b)
             else:
                 other.append(b)
-        # две колонки: обе стороны содержат заметную часть текста
         l_chars = sum(len((b[4] or "").strip()) for b in left)
         r_chars = sum(len((b[4] or "").strip()) for b in right)
         two_col = (total_chars > 0 and l_chars > total_chars * 0.15
@@ -164,14 +196,13 @@ class PDFDocument:
 
     # ==================== НУМЕРАЦИЯ СТРАНИЦ ====================
     def _detect_first_page_number(self) -> int:
-        """Печатный номер первой страницы (метки PDF или колонтитул)."""
         try:
             lbl = self.doc[0].get_label()
             if lbl and str(lbl).strip().isdigit():
                 return int(str(lbl).strip())
         except Exception:
             pass
-        text = self.pages_text[0] if self.pages_text else ""
+        text = self._raw_pages_text[0] if self._raw_pages_text else ""
         lines = [l.strip() for l in text.splitlines() if l.strip()]
         for l in lines[:3] + lines[-3:]:
             if re.fullmatch(r"\d{1,5}", l):
@@ -179,12 +210,6 @@ class PDFDocument:
         return 1
 
     def to_pdf_index(self, article_page):
-        """Номер страницы → индекс в PDF.
-
-        Сначала трактуем число как печатный номер (first_page_number...),
-        если оно вне диапазона печатной нумерации — как порядковый
-        номер страницы с начала документа (даже если печатная нумерация
-        начинается с тысячной)."""
         if article_page is None:
             return None
         try:
@@ -199,13 +224,11 @@ class PDFDocument:
         return None
 
     def to_article_page(self, pdf_index: int):
-        """Индекс в PDF → порядковый номер фрагмента (1..N)."""
         if 0 <= pdf_index < len(self.doc):
             return pdf_index + 1
         return None
 
     def printable_page(self, pdf_index: int):
-        """Индекс в PDF → печатный номер страницы."""
         if 0 <= pdf_index < len(self.doc):
             return pdf_index + int(self.first_page_number)
         return None
@@ -213,10 +236,6 @@ class PDFDocument:
     # ==================== ПОИСК ====================
     def search(self, query: str, mode: str = MODE_PHRASE,
                case_sensitive: bool = False):
-        """Поиск по всем страницам с настройками.
-
-        mode: phrase | words | substring | regex.
-        Возвращает список {'page', 'rect', 'text'}."""
         results = []
         if not query or not query.strip():
             return results
@@ -260,8 +279,6 @@ class PDFDocument:
                     except Exception:
                         pass
         if mode == MODE_PHRASE and not results:
-            # фолбэк: переносы/дефисы/лигатуры ломают точный поиск —
-            # ищем отдельные значимые слова запроса
             significant = [w for w in re.findall(r"[\w\-]{3,}", q)
                            if not w.isdigit()]
             if significant:
@@ -278,8 +295,6 @@ class PDFDocument:
 
     @staticmethod
     def _regex_on_page(page, pno, rx):
-        """Регулярка по строкам страницы: диапазон совпадения
-        превращаем в объединение rect-ов входящих в него слов."""
         results = []
         lines = {}
         for w in PDFDocument._page_words(page):
@@ -303,7 +318,6 @@ class PDFDocument:
         return results
 
     def _phrase_case_sensitive(self, page, pno, q):
-        """Поиск фразы с учётом регистра: построчно по словам."""
         results = []
         lines = {}
         for w in self._page_words(page):
@@ -326,12 +340,10 @@ class PDFDocument:
         return results
 
     def search_exact_ci(self, query: str):
-        """Обратная совместимость: регистронезависимый поиск фразы."""
         return self.search(query, MODE_PHRASE, False)
 
     def find_all_on_page(self, pno, query, mode=MODE_PHRASE,
                          case_sensitive=False):
-        """Все вхождения запроса на одной странице (для подсветки по ссылке)."""
         if not (0 <= pno < len(self.doc)):
             return []
         saved = []
@@ -375,7 +387,6 @@ class PDFDocument:
                 float(rect.x1), float(rect.y1))
 
     def toggle_highlight(self, pno, rect, color=(255, 170, 0, 130)):
-        """Поставить/снять маркер (по совпадению области)."""
         key = (pno, self._rect_key(rect))
         if key in self.highlights:
             self.highlights.pop(key, None)
@@ -391,7 +402,6 @@ class PDFDocument:
 
     # ==================== AI-ПОДСВЕТКИ ====================
     def set_ai_highlights(self, items):
-        """items: список (pno, rect). Подсвечиваются ВСЕ найденные места."""
         out = []
         for pno, rect in items:
             if rect is None:
@@ -417,7 +427,7 @@ class PDFDocument:
     def clear_ai_highlight(self):
         self._ai_highlights = []
 
-    # ==================== ЛЕЙАУТ СТРАНИЦЫ ====================
+    # ==================== ЛЕЙАУТ ====================
     def _page_layout(self, pno):
         if pno in self._layout_cache:
             return self._layout_cache[pno]
@@ -463,7 +473,7 @@ class PDFDocument:
         self._layout_cache[pno] = {"lines": lines, "med_h": med_h}
         return self._layout_cache[pno]
 
-    # ==================== РАСШИРЕНИЕ ЯКОРЯ ДО ФОРМУЛЫ ====================
+    # ==================== ФОРМУЛЫ ====================
     def find_formula_rect(self, pdf_index, anchor_rect=None):
         if not (0 <= pdf_index < len(self.doc)):
             return None
@@ -551,8 +561,6 @@ class PDFDocument:
             region = fitz.Rect(
                 result.x0 - 10, result.y0 - pad_y,
                 result.x1 + 10, result.y1 + pad_y)
-            # объединяем ВСЕ строки формул в районе якоря —
-            # чтобы выделялась формула целиком, а не кусок
             for ln in lines:
                 if not ln["math_hint"]:
                     continue

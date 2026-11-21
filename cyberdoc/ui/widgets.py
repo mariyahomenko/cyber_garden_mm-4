@@ -2,6 +2,7 @@
 
 * IconButton        — квадратная кнопка с иконкой и подсказкой;
 * SearchLineEdit    — поле поиска со счётчиком и стрелками ↑↓ внутри поля;
+* InlineIconButton  — неяркая кнопка-иконка для встраивания ВНУТРЬ поля;
 * BarTextEdit /
   BarTextBrowser    — текстовые поля с «полосой» кнопок внутри, у нижнего
                       края. Под полосу резервируется место (отступ области
@@ -99,10 +100,23 @@ def _draw_export(p, s):
         [_pt(3, 11), _pt(3, 13.5), _pt(13, 13.5), _pt(13, 11)]))
 
 
+def _draw_menu(p, s):
+    """Три точки — меню настроек. Компактнее и ровнее, чем глиф «▼»."""
+    for y in (4.5, 8.0, 11.5):
+        p.drawPoint(_pt(8, y))
+    # точки крупнее: рисуем кружки
+    p.setBrush(QtGui.QBrush(p.pen().color()))
+    for y in (4.5, 8.0, 11.5):
+        p.drawEllipse(_pt(8, y), 1.2, 1.2)
+    p.setBrush(QtCore.Qt.NoBrush)
+
+
 _DRAWERS = {
     "search": _draw_search, "copy": _draw_copy, "window": _draw_window,
     "prev": _draw_prev, "next": _draw_next, "up": _draw_up,
-    "down": _draw_down, "export": _draw_export, "marker": _draw_marker, "bookmark": _draw_bookmark, "close": _draw_close, "data": _draw_data,
+    "down": _draw_down, "export": _draw_export, "marker": _draw_marker,
+    "bookmark": _draw_bookmark, "close": _draw_close, "data": _draw_data,
+    "menu": _draw_menu,
 }
 _ICON_CACHE = {}
 
@@ -133,6 +147,37 @@ class IconButton(QtWidgets.QPushButton):
     def retheme(self):
         self.setStyleSheet(theme.ICON_BTN_QSS)
 
+
+class InlineIconButton(IconButton):
+    """Неяркая кнопка-иконка для встраивания ВНУТРЬ поля ввода.
+
+    Прозрачный фон, без рамки, приглушённый цвет иконки. При наведении
+    подсветка мягче, чем у обычных кнопок. Используется как «стрелка»
+    справа внутри QLineEdit.
+    """
+
+    def __init__(self, icon_name, tooltip, parent=None, size=26):
+        # Сохраняем имя иконки ДО super().__init__, иначе retheme()
+        # (вызываемый из IconButton.__init__) его не найдёт.
+        self._icon_name = icon_name
+        super().__init__(icon_name, tooltip, parent, size=size)
+        self.setIconSize(QtCore.QSize(14, 14))
+        self.retheme()
+
+    def retheme(self):
+        name = getattr(self, "_icon_name", None)
+        if name is None:
+            # Пока атрибут не задан — просто не трогаем иконку.
+            return
+        dim = theme.html_colors()["hint"]
+        self.setIcon(icon(name, dim))
+        self.setStyleSheet(
+            "QPushButton { background:transparent; border:none;"
+            " border-radius:6px; padding:0px; }"
+            "QPushButton:hover { background:rgba(127,127,127,0.18); }"
+            "QPushButton:pressed { background:rgba(127,127,127,0.28); }"
+            "QPushButton::menu-indicator { image:none; width:0px; }")
+        
 
 # ======================================================================
 # поле поиска со стрелками внутри

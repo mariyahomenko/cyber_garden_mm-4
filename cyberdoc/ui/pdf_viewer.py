@@ -1,9 +1,9 @@
-import fitz
+import pymupdf as fitz
 from PyQt5 import QtWidgets, QtCore, QtGui
-
 from .. import theme
-from ..pdfdoc import SEARCH_MODES, MODE_PHRASE
-from .widgets import IconButton
+from .. import pdfdoc as pdfdoc_mod
+from ..pdfdoc import SEARCH_MODES, MODE_PHRASE, MODE_WORDS, MODE_SUBSTRING
+from .widgets import IconButton, InlineIconButton
 
 
 class TickOverlay(QtWidgets.QWidget):
@@ -35,10 +35,10 @@ class PDFViewerWindow(QtWidgets.QMainWindow):
         super().__init__(parent)
         self.pdf_doc = pdf_doc
         self.setWindowTitle("Просмотр — %s" % pdf_doc.name)
-        self.resize(1180, 760)
+        self.resize(1300, 880)
 
         self.zoom = 1.3
-        self.page_items = []          # [(item, pno, page, zoom)]
+        self.page_items = []
         self.search_results = []
         self.search_idx = -1
         self.nav_stack = []
@@ -49,6 +49,8 @@ class PDFViewerWindow(QtWidgets.QMainWindow):
         self._rubber_start = None
         self._rubber_active = False
         self._rubber_item = None
+        self._text_page = -1
+        self._saved_split_sizes = None
 
         central = QtWidgets.QWidget()
         self.setCentralWidget(central)
@@ -57,8 +59,8 @@ class PDFViewerWindow(QtWidgets.QMainWindow):
         outer.setSpacing(8)
         splitter = QtWidgets.QSplitter(QtCore.Qt.Horizontal)
         outer.addWidget(splitter)
+        self._splitter = splitter
 
-        # -------- левая панель (тянется за разделитель) --------
         self.left_wrap = QtWidgets.QWidget()
         self.left_wrap.setMinimumWidth(28)
         lv = QtWidgets.QVBoxLayout(self.left_wrap)
@@ -91,7 +93,6 @@ class PDFViewerWindow(QtWidgets.QMainWindow):
         splitter.addWidget(self.left_wrap)
         splitter.setCollapsible(0, False)
 
-        # -------- центр --------
         center = QtWidgets.QWidget()
         cv = QtWidgets.QVBoxLayout(center)
         cv.setContentsMargins(0, 0, 0, 0)
@@ -99,37 +100,42 @@ class PDFViewerWindow(QtWidgets.QMainWindow):
 
         tb1 = QtWidgets.QHBoxLayout()
         cv.addLayout(tb1)
+
         self.search_input = QtWidgets.QLineEdit()
         self.search_input.setPlaceholderText("Поиск в документе... (Ctrl+F)")
         self.search_input.textChanged.connect(self._on_search_text_changed)
-        # Поиск выполняется по Enter (а также по кнопке «Поиск»)
         self.search_input.returnPressed.connect(
             lambda: self.run_search(silent=False))
         tb1.addWidget(self.search_input, 1)
 
-        self.search_mode = QtWidgets.QComboBox()
-        for mode, label in SEARCH_MODES:
-            self.search_mode.addItem(label, mode)
-        self.search_mode.setCurrentIndex(0)
-        tb1.addWidget(self.search_mode)
+        self._menu_btn_size = 26
+        self.search_btn_menu = InlineIconButton(
+            "menu", "Настройки поиска", self.search_input,
+            size=self._menu_btn_size)
 
-        self.case_check = QtWidgets.QCheckBox("Регистр")
-        self.case_check.setToolTip("Учитывать регистр при поиске")
-        tb1.addWidget(self.case_check)
+        self.search_menu = QtWidgets.QMenu(self.search_btn_menu)
+        self.act_case = self.search_menu.addAction("Учитывать регистр")
+        self.act_case.setCheckable(True)
+        self.act_whole = self.search_menu.addAction("Только слово целиком")
+        self.act_whole.setCheckable(True)
+        self.search_btn_menu.setMenu(self.search_menu)
+
+        self.search_input.setTextMargins(0, 0, self._menu_btn_size + 6, 0)
 
         self.btn_search = QtWidgets.QPushButton("Поиск")
+        self.btn_search.setFixedHeight(36)
         self.btn_search.setFixedWidth(70)
         self.btn_search.clicked.connect(lambda: self.run_search(silent=False))
         tb1.addWidget(self.btn_search)
 
         self.btn_prev = QtWidgets.QPushButton("↑")
-        self.btn_prev.setFixedWidth(40)
+        self.btn_prev.setFixedSize(36, 36)
         self.btn_prev.clicked.connect(self.prev_match)
         self.btn_prev.setEnabled(False)
         tb1.addWidget(self.btn_prev)
 
         self.btn_next = QtWidgets.QPushButton("↓")
-        self.btn_next.setFixedWidth(40)
+        self.btn_next.setFixedSize(36, 36)
         self.btn_next.clicked.connect(self.next_match)
         self.btn_next.setEnabled(False)
         tb1.addWidget(self.btn_next)
@@ -148,8 +154,6 @@ class PDFViewerWindow(QtWidgets.QMainWindow):
         self.page_spin.valueChanged.connect(lambda v: self.nav_go(v - 1, None))
         tb1.addWidget(self.page_spin)
 
-        # Две кнопки-шеврона рядом, справа от поля: ˄ — страница на 1 меньше,
-        # ˅ — на 1 больше
         self.btn_page_up = IconButton("up", "Предыдущая страница", size=30)
         self.btn_page_up.clicked.connect(lambda: self._page_step(-1))
         tb1.addWidget(self.btn_page_up)
@@ -164,11 +168,6 @@ class PDFViewerWindow(QtWidgets.QMainWindow):
             "Повторное выделение поверх маркера снимает его.")
         self.btn_highlight.toggled.connect(self._on_highlight_toggled)
         tb1.addWidget(self.btn_highlight)
-        self.btn_select = QtWidgets.QPushButton("Выделить текст")
-        self.btn_select.setCheckable(True)
-        self.btn_select.setToolTip("Выделите прямоугольником текст на странице; он будет скопирован в буфер обмена")
-        self.btn_select.toggled.connect(self._on_select_toggled)
-        tb1.addWidget(self.btn_select)
 
         self.btn_bm = IconButton("bookmark", "Добавить закладку", size=36)
         self.btn_bm.setFixedWidth(46)
@@ -176,10 +175,18 @@ class PDFViewerWindow(QtWidgets.QMainWindow):
         self.btn_bm.clicked.connect(self.add_bookmark)
         tb1.addWidget(self.btn_bm)
 
+        self.btn_text = IconButton("copy", "Текст страницы: выделять/копировать",
+                                   size=36)
+        self.btn_text.setCheckable(True)
+        self.btn_text.setToolTip(
+            "Панель текста страницы: можно выделять и копировать (Ctrl+C).")
+        self.btn_text.toggled.connect(self._on_text_toggled)
+        tb1.addWidget(self.btn_text)
+
         tb2 = QtWidgets.QHBoxLayout()
         cv.addLayout(tb2)
         self.btn_zoom_out = QtWidgets.QPushButton("-")
-        self.btn_zoom_out.setFixedWidth(40)
+        self.btn_zoom_out.setFixedSize(36, 36)
         self.btn_zoom_out.clicked.connect(lambda: self._set_zoom(self.zoom / 1.2))
         tb2.addWidget(self.btn_zoom_out)
 
@@ -189,15 +196,17 @@ class PDFViewerWindow(QtWidgets.QMainWindow):
         tb2.addWidget(self.zoom_label)
 
         self.btn_zoom_in = QtWidgets.QPushButton("+")
-        self.btn_zoom_in.setFixedWidth(40)
+        self.btn_zoom_in.setFixedSize(36, 36)
         self.btn_zoom_in.clicked.connect(lambda: self._set_zoom(self.zoom * 1.2))
         tb2.addWidget(self.btn_zoom_in)
 
         self.btn_fit = QtWidgets.QPushButton("По ширине")
+        self.btn_fit.setFixedHeight(36)
         self.btn_fit.clicked.connect(self._fit_width)
         tb2.addWidget(self.btn_fit)
 
         self.btn_100 = QtWidgets.QPushButton("100%")
+        self.btn_100.setFixedHeight(36)
         self.btn_100.clicked.connect(lambda: self._set_zoom(1.0))
         tb2.addWidget(self.btn_100)
 
@@ -219,9 +228,46 @@ class PDFViewerWindow(QtWidgets.QMainWindow):
         cv.addWidget(scene_wrap, 1)
 
         splitter.addWidget(center)
-        splitter.setSizes([280, 900])
 
-        # -------- горячие клавиши --------
+        self.text_panel = QtWidgets.QWidget()
+        self.text_panel.setMinimumWidth(0)
+        tv = QtWidgets.QVBoxLayout(self.text_panel)
+        tv.setContentsMargins(6, 6, 6, 6)
+        tv.setSpacing(6)
+
+        text_head = QtWidgets.QHBoxLayout()
+        tv.addLayout(text_head)
+        self.text_title = QtWidgets.QLabel("Текст страницы")
+        text_head.addWidget(self.text_title, 1)
+        self.btn_ocr = QtWidgets.QPushButton("Распознать (OCR)")
+        self.btn_ocr.setToolTip(
+            "Запустить OCR для текущей страницы (для сканов без текста)")
+        self.btn_ocr.clicked.connect(self._run_ocr_for_current_page)
+        self.btn_ocr.setVisible(False)
+        text_head.addWidget(self.btn_ocr)
+        self.btn_copy_page = QtWidgets.QPushButton("Копировать")
+        self.btn_copy_page.setToolTip(
+            "Скопировать весь текст текущей страницы в буфер")
+        self.btn_copy_page.clicked.connect(self.copy_page_text)
+        text_head.addWidget(self.btn_copy_page)
+
+        self.text_view = QtWidgets.QTextBrowser()
+        self.text_view.setOpenExternalLinks(False)
+        self.text_view.setLineWrapMode(QtWidgets.QTextEdit.WidgetWidth)
+        self.text_view.setWordWrapMode(
+            QtGui.QTextOption.WrapAtWordBoundaryOrAnywhere)
+        self.text_view.setTextInteractionFlags(
+            QtCore.Qt.TextSelectableByMouse
+            | QtCore.Qt.TextSelectableByKeyboard)
+        tv.addWidget(self.text_view, 1)
+
+        splitter.addWidget(self.text_panel)
+        splitter.setStretchFactor(0, 0)
+        splitter.setStretchFactor(1, 1)
+        splitter.setStretchFactor(2, 0)
+        splitter.setSizes([280, 900, 0])
+        self.text_panel.setVisible(False)
+
         QtWidgets.QShortcut(
             QtGui.QKeySequence("Ctrl+F"), self).activated.connect(
                 lambda: (self.search_input.setFocus(),
@@ -254,42 +300,55 @@ class PDFViewerWindow(QtWidgets.QMainWindow):
         self._update_nav_buttons()
         self._center_on_screen()
 
-    # ============================ тема ============================
     def retheme(self):
         self.setStyleSheet(theme.LABEL_QSS)
         self.view.setStyleSheet(
             "QGraphicsView { background-color:%s; border:none; }"
             % theme.VIEW_BG)
-        for w in (self.search_input, self.page_spin):
+        for w in (self.search_input, self.page_spin, self.text_view):
             w.setStyleSheet(theme.INPUT_QSS)
-        self.search_mode.setStyleSheet(theme.INPUT_QSS)
-        # только подпись «Регистр»: цвет из текущей темы (светлая на тёмном
-        # фоне, тёмная на светлом), остальные тексты не затрагиваются
-        self.case_check.setStyleSheet(theme.CHECK_QSS)
+        self.search_btn_menu.retheme()
         self.btn_page_up.retheme()
         self.btn_page_down.retheme()
         self.btn_highlight.retheme()
         self.btn_bm.retheme()
+        self.btn_text.retheme()
         for w in (self.btn_collapse, self.btn_search, self.btn_prev,
-                  self.btn_next, self.btn_select,
-                  self.btn_zoom_out, self.btn_zoom_in, self.btn_fit,
-                  self.btn_100):
+                  self.btn_next, self.btn_zoom_out, self.btn_zoom_in,
+                  self.btn_fit, self.btn_100, self.btn_copy_page,
+                  self.btn_ocr):
             w.setStyleSheet(theme.BUTTON_QSS)
-        for w in (self.match_label, self.zoom_label):
+        for w in (self.match_label, self.zoom_label, self.text_title):
             w.setStyleSheet(theme.LABEL_QSS)
         for w in (self.thumb_list, self.bm_list):
             w.setStyleSheet(theme.INPUT_QSS)
         self.ticks.update()
 
-    # ============================ окно ============================
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        self._place_search_menu_button()
+
+    def _place_search_menu_button(self):
+        if not hasattr(self, "search_btn_menu"):
+            return
+        h = self.search_input.height()
+        s = self._menu_btn_size
+        y = (h - s) // 2
+        x = self.search_input.width() - s - 6
+        self.search_btn_menu.move(x, y)
+        self.search_btn_menu.raise_()
+
+    def showEvent(self, event):
+        super().showEvent(event)
+        QtCore.QTimer.singleShot(0, self._place_search_menu_button)
+
     def _center_on_screen(self):
         scr = QtWidgets.QApplication.primaryScreen().availableGeometry()
-        w = min(1180, int(scr.width() * 0.9))
-        h = min(760, int(scr.height() * 0.9))
+        w = min(1300, int(scr.width() * 0.9))
+        h = min(880, int(scr.height() * 0.9))
         self.resize(w, h)
         self.move(scr.center() - self.rect().center())
 
-    # ============================ левая панель ============================
     def _toggle_left_panel(self):
         if self.left.isVisible():
             self._left_saved = self.left_wrap.width()
@@ -304,7 +363,113 @@ class PDFViewerWindow(QtWidgets.QMainWindow):
                                   self.left_wrap.height())
             self.btn_collapse.setText("‹")
 
-    # ============================ навигация ============================
+    def _on_text_toggled(self, checked):
+        if checked:
+            if self._saved_split_sizes is None:
+                self._saved_split_sizes = self._splitter.sizes()
+            self.text_panel.setVisible(True)
+            sizes = self._splitter.sizes()
+            total = sum(sizes) if sum(sizes) else self._splitter.width()
+            left = sizes[0] if sizes and sizes[0] > 0 else 280
+            if self._saved_split_sizes and self._saved_split_sizes[0] > 0:
+                left = self._saved_split_sizes[0]
+            target_text = max(260, int(total * 0.35))
+            target_center = max(300, total - target_text - left)
+            self._splitter.setSizes([left, target_center, target_text])
+            self._update_text_panel(force=True)
+        else:
+            cur = self._splitter.sizes()
+            left = cur[0] if cur and cur[0] > 0 else 280
+            if self._saved_split_sizes and self._saved_split_sizes[0] > 0:
+                left = self._saved_split_sizes[0]
+            center = max(300, sum(cur) - left)
+            self.text_panel.setVisible(False)
+            self._splitter.setSizes([left, center, 0])
+            self._saved_split_sizes = None
+
+    def _update_text_panel(self, force=False):
+        if not self.text_panel.isVisible():
+            return
+        pno = self._current_page()
+        if pno == self._text_page and not force:
+            return
+        self._text_page = pno
+        if not (0 <= pno < len(self.pdf_doc.doc)):
+            return
+
+        text = self.pdf_doc.pages_text[pno] or ""
+        has_layer = self.pdf_doc.has_text_layer(pno)
+        if (not has_layer) and len(text.strip()) < 20 \
+                and pdfdoc_mod.OCR_AVAILABLE:
+            text = self.pdf_doc.ocr_page(pno) or text
+            has_layer = self.pdf_doc.has_text_layer(pno)
+
+        if len(text.strip()) < 20:
+            if pdfdoc_mod.OCR_AVAILABLE:
+                msg = ("Текст не распознан (скан). "
+                       "Нажмите «Распознать (OCR)» — если установлен "
+                       "Tesseract (PyMuPDF-мост или pytesseract).")
+                self.btn_ocr.setVisible(True)
+            else:
+                msg = ("Текст не распознан (скан). OCR-движок не найден: "
+                       "установите Tesseract или pytesseract+Pillow, "
+                       "чтобы включить распознавание.")
+                self.btn_ocr.setVisible(False)
+            self.text_view.setHtml(
+                '<div style="color:%s; font-size:13px;">%s</div>'
+                % (theme.html_colors()["hint"], msg))
+            self.text_title.setText("Текст страницы %d" % (pno + 1))
+            return
+
+        self.btn_ocr.setVisible(not has_layer)
+        safe = (text.replace("&", "&amp;").replace("<", "&lt;")
+                    .replace(">", "&gt;"))
+        safe = safe.replace("\n", "<br>")
+        prefix = ""
+        if not has_layer:
+            prefix = ('<div style="color:%s; font-size:12px; '
+                      'margin-bottom:4px;">[OCR]</div>'
+                      % theme.html_colors()["hint"])
+        self.text_view.setHtml(
+            '%s<div style="color:%s; font-size:13px;">%s</div>'
+            % (prefix, theme.html_colors()["text"], safe))
+        self.text_title.setText("Текст страницы %d" % (pno + 1))
+
+    def _run_ocr_for_current_page(self):
+        pno = self._current_page()
+        if not (0 <= pno < len(self.pdf_doc.doc)):
+            return
+        if not pdfdoc_mod.OCR_AVAILABLE:
+            QtWidgets.QMessageBox.information(
+                self, "OCR",
+                "OCR-движок не найден. Установите Tesseract "
+                "(PyMuPDF-мост) или пакеты pytesseract и Pillow.")
+            return
+        QtWidgets.QApplication.setOverrideCursor(QtCore.Qt.WaitCursor)
+        try:
+            text = self.pdf_doc.ocr_page(pno)
+        except Exception as e:
+            QtWidgets.QApplication.restoreOverrideCursor()
+            QtWidgets.QMessageBox.warning(
+                self, "OCR", "Ошибка OCR: %s" % e)
+            return
+        finally:
+            QtWidgets.QApplication.restoreOverrideCursor()
+        if not text.strip():
+            QtWidgets.QMessageBox.information(
+                self, "OCR",
+                "На странице не удалось распознать текст.")
+            return
+        self._text_page = -1
+        self._update_text_panel(force=True)
+
+    def copy_page_text(self):
+        pno = self._current_page()
+        if 0 <= pno < len(self.pdf_doc.pages_text):
+            QtWidgets.QApplication.clipboard().setText(
+                self.pdf_doc.pages_text[pno] or "")
+            self.statusBar().showMessage("Текст страницы скопирован", 2000)
+
     def nav_go(self, pno, rect=None, push=True):
         if not (0 <= pno < len(self.page_items)):
             return
@@ -339,7 +504,6 @@ class PDFViewerWindow(QtWidgets.QMainWindow):
         pass
 
     def _page_step(self, delta):
-        """delta = -1: страница на единицу меньше, +1: на единицу больше."""
         if not self.page_items:
             return
         target = max(0, min(len(self.page_items) - 1,
@@ -347,7 +511,6 @@ class PDFViewerWindow(QtWidgets.QMainWindow):
         self.nav_go(target, None)
 
     def pulse(self, pno, rect):
-        """Оранжевая вспышка на найденном месте."""
         self._clear_pulse()
         if not (0 <= pno < len(self.page_items)) or rect is None:
             return
@@ -373,7 +536,6 @@ class PDFViewerWindow(QtWidgets.QMainWindow):
                 pass
         self._pulse_items = []
 
-    # ============================ миниатюры ============================
     def _thumb(self, pno):
         if pno in self._thumb_cache:
             return self._thumb_cache[pno]
@@ -397,7 +559,6 @@ class PDFViewerWindow(QtWidgets.QMainWindow):
     def _thumb_clicked(self, item):
         self.nav_go(item.data(QtCore.Qt.UserRole))
 
-    # ============================ закладки ============================
     def add_bookmark(self):
         pno = self._current_page()
         dlg = QtWidgets.QInputDialog(self)
@@ -445,7 +606,6 @@ class PDFViewerWindow(QtWidgets.QMainWindow):
                 del self.pdf_doc.bookmarks[i]
                 self._refresh_bookmarks()
 
-    # ============================ рендер ============================
     def _current_page(self):
         c = self.view.mapToScene(self.view.viewport().rect().center())
         best, bd = 0, None
@@ -473,7 +633,6 @@ class PDFViewerWindow(QtWidgets.QMainWindow):
         if w > 0:
             self._set_zoom((self.view.viewport().width() - 30) / w)
 
-    # ======================= обработка мыши/зума =======================
     def eventFilter(self, obj, event):
         if obj is self.view.viewport():
             et = event.type()
@@ -485,7 +644,7 @@ class PDFViewerWindow(QtWidgets.QMainWindow):
                     return True
             elif et == QtCore.QEvent.MouseButtonPress:
                 if event.button() == QtCore.Qt.LeftButton:
-                    if self.btn_highlight.isChecked() or self.btn_select.isChecked():
+                    if self.btn_highlight.isChecked():
                         self._rubber_start = self.view.mapToScene(event.pos())
                         self._rubber_active = True
                         return True
@@ -530,7 +689,6 @@ class PDFViewerWindow(QtWidgets.QMainWindow):
         if rect.width() < 3 or rect.height() < 3:
             return
 
-        # Определяем целевую страницу
         target_pno = None
         for item, pno, _page, zoom in self.page_items:
             if item.sceneBoundingRect().intersects(rect):
@@ -542,28 +700,12 @@ class PDFViewerWindow(QtWidgets.QMainWindow):
         item, pno, page, zoom = self.page_items[target_pno]
         ox, oy = item.pos().x(), item.pos().y()
 
-        # QRectF → PDF-координаты (fitz.Rect) через .left/.top/.right/.bottom
         pdf_rect = fitz.Rect(
             (rect.left() - ox) / zoom,
             (rect.top() - oy) / zoom,
             (rect.right() - ox) / zoom,
             (rect.bottom() - oy) / zoom)
 
-        if self.btn_select.isChecked():
-            selected = page.get_textbox(pdf_rect).strip()
-            if not selected:
-                # Scan/OCR fallback: the original page may have no text layer.
-                words = self.pdf_doc._ocr_page_words(pno)
-                selected = " ".join(w for x0,y0,x1,y1,w in words
-                                    if fitz.Rect(x0,y0,x1,y1).intersects(pdf_rect))
-            if selected:
-                QtWidgets.QApplication.clipboard().setText(selected)
-                QtWidgets.QToolTip.showText(QtGui.QCursor.pos(), "Текст скопирован")
-            else:
-                QtWidgets.QToolTip.showText(QtGui.QCursor.pos(), "Текст не найден: проверьте OCR")
-            return
-
-        # Проверяем: если маркер уже есть и пересекается с новой областью — снимаем.
         to_remove = []
         for (hp, hr), _c in list(self.pdf_doc.highlights.items()):
             if hp != pno:
@@ -580,15 +722,7 @@ class PDFViewerWindow(QtWidgets.QMainWindow):
 
         self._draw_highlights()
 
-    def _on_select_toggled(self, checked):
-        if checked and self.btn_highlight.isChecked():
-            self.btn_highlight.setChecked(False)
-        self.view.setDragMode(QtWidgets.QGraphicsView.NoDrag if checked else QtWidgets.QGraphicsView.ScrollHandDrag)
-        self.view.viewport().setCursor(QtCore.Qt.CrossCursor if checked else QtCore.Qt.OpenHandCursor)
-
     def _on_highlight_toggled(self, checked):
-        if checked and self.btn_select.isChecked():
-            self.btn_select.setChecked(False)
         if checked:
             self.view.setDragMode(QtWidgets.QGraphicsView.NoDrag)
             self.view.viewport().setCursor(QtCore.Qt.CrossCursor)
@@ -626,6 +760,7 @@ class PDFViewerWindow(QtWidgets.QMainWindow):
         self.thumb_list.setCurrentRow(pno)
         self.thumb_list.blockSignals(False)
         self._draw_ai_highlight()
+        self._update_text_panel()
 
     def _center_on_rect(self, pno, rect):
         if not (0 <= pno < len(self.page_items)):
@@ -681,7 +816,6 @@ class PDFViewerWindow(QtWidgets.QMainWindow):
             el.setZValue(5)
         self.ticks.set_pages(hp for hp, _hr in items)
 
-    # ============ подсветки из ответа (ссылки [стр. N]) ============
     def _draw_ai_highlight(self):
         for it in self._ai_highlight_items:
             try:
@@ -724,11 +858,20 @@ class PDFViewerWindow(QtWidgets.QMainWindow):
         if not q:
             self._reset_search_ui()
             return
-        mode = self.search_mode.currentData() or MODE_PHRASE
-        case_sensitive = self.case_check.isChecked()
+
+        case_sensitive = self.act_case.isChecked()
+        whole_word = self.act_whole.isChecked()
+
+        if whole_word:
+            mode = MODE_WORDS
+        else:
+            if " " in q:
+                mode = MODE_PHRASE
+            else:
+                mode = MODE_SUBSTRING
+
         try:
-            self.search_results = self.pdf_doc.search(
-                q, mode, case_sensitive)
+            self.search_results = self.pdf_doc.search(q, mode, case_sensitive)
         except Exception as e:
             self.search_results = []
             if not silent:
@@ -776,8 +919,6 @@ class PDFViewerWindow(QtWidgets.QMainWindow):
             self._show_match()
 
     def closeEvent(self, event):
-        # При закрытии окна снимаем поисковые выделения (кроме маркеров):
-        # при повторном открытии старые вхождения не подсвечиваются.
         self.pdf_doc.clear_search_highlights()
         self.pdf_doc.clear_ai_highlight()
         self.pdf_doc.thumbs.clear()

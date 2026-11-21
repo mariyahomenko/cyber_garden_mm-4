@@ -1,6 +1,7 @@
 """Research data review and export window."""
 import json
 from PyQt5 import QtCore, QtWidgets
+from .. import theme
 from ..research import SOLAR, RAG, extract_candidates, validate, export_dataset
 
 class ResearchDialog(QtWidgets.QDialog):
@@ -9,23 +10,40 @@ class ResearchDialog(QtWidgets.QDialog):
         self.docs=docs;self.records=[]
         self.setWindowTitle("CyberDoc · Научные данные и проверка")
         self.resize(1100,700)
-        self.setStyleSheet("""QDialog{background:#141b2b;color:#e8eef9} QLabel{color:#e8eef9}
-        QTableWidget,QTextBrowser,QComboBox{background:#202c40;color:#f1f5fa;border:1px solid #34455e;border-radius:7px}
-        QPushButton{background:#3478dc;color:white;border:0;border-radius:7px;padding:9px 14px}
-        QPushButton:hover{background:#4b91f2} QHeaderView::section{background:#293951;color:white;padding:7px}""")
+        
         lay=QtWidgets.QVBoxLayout(self)
         title=QtWidgets.QLabel("Научные данные · извлечение и проверка")
-        title.setStyleSheet("font-size:20px;font-weight:700")
+        title.setStyleSheet("font-size:20px; font-weight:700;")
         lay.addWidget(title)
+        
         hint=QtWidgets.QLabel("Автоматически найденные значения — кандидаты. Проверьте каждое по исходной странице PDF.")
-        hint.setWordWrap(True);lay.addWidget(hint)
-        bar=QtWidgets.QHBoxLayout();lay.addLayout(bar)
-        self.domain=QtWidgets.QComboBox();self.domain.addItem("Солнечные элементы",SOLAR);self.domain.addItem("RAG-системы",RAG)
+        hint.setWordWrap(True)
+        lay.addWidget(hint)
+        
+        bar=QtWidgets.QHBoxLayout()
+        lay.addLayout(bar)
+        
+        self.domain=QtWidgets.QComboBox()
+        self.domain.addItem("Солнечные элементы",SOLAR)
+        self.domain.addItem("RAG-системы",RAG)
         bar.addWidget(self.domain)
-        self.scan=QtWidgets.QPushButton("Извлечь из открытых PDF");self.scan.clicked.connect(self.extract);bar.addWidget(self.scan)
-        self.verify=QtWidgets.QPushButton("Подтвердить запись");self.verify.clicked.connect(self.mark_verified);bar.addWidget(self.verify)
-        self.import_btn=QtWidgets.QPushButton("Загрузить JSON");self.import_btn.clicked.connect(self.load_json);bar.addWidget(self.import_btn)
-        self.export=QtWidgets.QPushButton("Экспорт JSON");self.export.clicked.connect(self.save);bar.addWidget(self.export)
+        
+        self.scan=QtWidgets.QPushButton("Извлечь из открытых PDF")
+        self.scan.clicked.connect(self.extract)
+        bar.addWidget(self.scan)
+        
+        self.verify=QtWidgets.QPushButton("Подтвердить запись")
+        self.verify.clicked.connect(self.mark_verified)
+        bar.addWidget(self.verify)
+        
+        self.import_btn=QtWidgets.QPushButton("Загрузить JSON")
+        self.import_btn.clicked.connect(self.load_json)
+        bar.addWidget(self.import_btn)
+        
+        self.export=QtWidgets.QPushButton("Экспорт JSON")
+        self.export.clicked.connect(self.save)
+        bar.addWidget(self.export)
+        
         self.table=QtWidgets.QTableWidget(0,7)
         self.table.setHorizontalHeaderLabels(["Статус","Показатель","Значение","Ед.","Файл","Стр.","Замечания"])
         self.table.setSelectionBehavior(QtWidgets.QAbstractItemView.SelectRows)
@@ -33,15 +51,32 @@ class ResearchDialog(QtWidgets.QDialog):
         self.table.horizontalHeader().setStretchLastSection(True)
         self.table.itemSelectionChanged.connect(self.show_source)
         lay.addWidget(self.table,3)
+        
         lay.addWidget(QtWidgets.QLabel("Исходный фрагмент и замечания"))
-        self.source=QtWidgets.QTextBrowser();lay.addWidget(self.source,1)
+        self.source=QtWidgets.QTextBrowser()
+        lay.addWidget(self.source,1)
+        
         self.status=QtWidgets.QLabel("Откройте PDF, выберите предметную область и нажмите «Извлечь»")
         lay.addWidget(self.status)
+        
+        self.retheme()
+
+    def retheme(self):
+        self.setStyleSheet(theme.DIALOG_QSS)
+        self.domain.setStyleSheet(theme.INPUT_QSS)
+        self.scan.setStyleSheet(theme.BUTTON_QSS)
+        self.verify.setStyleSheet(theme.BUTTON_QSS)
+        self.import_btn.setStyleSheet(theme.BUTTON_QSS)
+        self.export.setStyleSheet(theme.BUTTON_QSS)
+        self.table.setStyleSheet(theme.TABLE_QSS)
+        self.source.setStyleSheet(theme.INPUT_QSS)
+
     def extract(self):
         domain=self.domain.currentData()
         self.records=[]
         for doc in self.docs.values():self.records.extend(extract_candidates(doc,domain))
         self.refresh()
+
     def refresh(self):
         self.table.setRowCount(len(self.records))
         for i,r in enumerate(self.records):
@@ -54,9 +89,11 @@ class ResearchDialog(QtWidgets.QDialog):
         self.table.resizeColumnsToContents()
         self.status.setText("Найдено записей: %d · Требуют проверки: %d" %
             (len(self.records),sum(r["extraction_status"]=="candidate" for r in self.records)))
+
     def selected(self):
         row=self.table.currentRow()
         return self.records[row] if 0<=row<len(self.records) else None
+
     def show_source(self):
         r=self.selected()
         if not r:return
@@ -64,13 +101,16 @@ class ResearchDialog(QtWidgets.QDialog):
         self.source.setPlainText("Файл: %s\nСтраница PDF: %s\n\n%s\n\nЗамечания:\n%s" %
             (r["source_file"],r["source_page"],r["source_fragment"],
              "\n".join("• "+f["message"] for f in findings) or "Нет автоматических замечаний"))
+
     def mark_verified(self):
         r=self.selected()
         if not r:return
         confirm=QtWidgets.QMessageBox.question(self,"Проверка источника",
            "Вы вручную сверили значение, единицу и контекст с исходной страницей PDF?")
         if confirm==QtWidgets.QMessageBox.Yes:
-            r["extraction_status"]="verified";self.refresh()
+            r["extraction_status"]="verified"
+            self.refresh()
+
     def load_json(self):
         path, _ = QtWidgets.QFileDialog.getOpenFileName(self, "Загрузить научные данные", "", "JSON (*.json)")
         if not path:
@@ -95,7 +135,8 @@ class ResearchDialog(QtWidgets.QDialog):
 
     def save(self):
         if not self.records:
-            QtWidgets.QMessageBox.information(self,"Нет данных","Сначала выполните извлечение.");return
+            QtWidgets.QMessageBox.information(self,"Нет данных","Сначала выполните извлечение.")
+            return
         path,_=QtWidgets.QFileDialog.getSaveFileName(self,"Экспорт набора данных","cyberdoc_dataset.json","JSON (*.json)")
         if path:
             count,issues=export_dataset(path,self.records,self.domain.currentData())
