@@ -1,0 +1,8 @@
+PyQt5>=5.15
+PyMuPDF>=1.24
+requests>=2.31
+matplotlib>=3.8
+Pillow>=10.0
+
+# OCR for scanned PDFs (also install Tesseract OCR separately)
+pytesseract>=0.3.10
