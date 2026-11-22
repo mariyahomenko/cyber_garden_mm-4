@@ -58,6 +58,9 @@ DeepSeek использует `Authorization: Bearer <key>` и потоковы�
 - `GIGACHAT_VERIFY_SSL=1` для проверки сертификата.
 
 Секреты через переменные окружения в архив не включаются.
+Создание ключей:
+1. DeepSeek: https://platform.deepseek.com/sign_in
+2. GigaChat: https://developers.sber.ru
 
 ## 6. Работа с PDF
 
