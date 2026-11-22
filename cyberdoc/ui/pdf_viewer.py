@@ -103,6 +103,12 @@ class PDFViewerWindow(QtWidgets.QMainWindow):
 
         self.search_input = QtWidgets.QLineEdit()
         self.search_input.setPlaceholderText("Поиск в документе... (Ctrl+F)")
+        QtWidgets.QShortcut(
+            QtGui.QKeySequence("Right"), self).activated.connect(
+                self.next_in_group)
+        QtWidgets.QShortcut(
+            QtGui.QKeySequence("Left"), self).activated.connect(
+                self.prev_in_group)
         self.search_input.textChanged.connect(self._on_search_text_changed)
         self.search_input.returnPressed.connect(
             lambda: self.run_search(silent=False))
@@ -823,6 +829,8 @@ class PDFViewerWindow(QtWidgets.QMainWindow):
             except Exception:
                 pass
         self._ai_highlight_items = []
+
+        # обычная одиночная подсветка (anchor:)
         for pno, rect in self.pdf_doc.get_ai_highlights():
             if not (0 <= pno < len(self.page_items)):
                 continue
@@ -835,6 +843,26 @@ class PDFViewerWindow(QtWidgets.QMainWindow):
             pen = QtGui.QPen(QtGui.QColor(140, 100, 255, 230), 2,
                              QtCore.Qt.DashLine)
             brush = QtGui.QBrush(QtGui.QColor(140, 100, 255, 70))
+            el = self.scene.addRect(r, pen, brush)
+            el.setZValue(15)
+            self._ai_highlight_items.append(el)
+
+        # группа (дубликаты): разные цвета, текущий — толще
+        group = self.pdf_doc.get_ai_highlight_group()
+        for idx, (pno, rect, color) in enumerate(group):
+            if not (0 <= pno < len(self.page_items)):
+                continue
+            item, _, _, zoom = self.page_items[pno]
+            ox, oy = item.pos().x(), item.pos().y()
+            r = QtCore.QRectF(
+                ox + rect.x0 * zoom - 3, oy + rect.y0 * zoom - 3,
+                (rect.x1 - rect.x0) * zoom + 6,
+                (rect.y1 - rect.y0) * zoom + 6)
+            qc = QtGui.QColor(color)
+            width = 3 if idx == getattr(self, "_group_idx", -1) else 2
+            pen = QtGui.QPen(qc, width, QtCore.Qt.DashLine)
+            brush = QtGui.QBrush(QtGui.QColor(qc.red(), qc.green(),
+                                              qc.blue(), 80))
             el = self.scene.addRect(r, pen, brush)
             el.setZValue(15)
             self._ai_highlight_items.append(el)
@@ -908,6 +936,36 @@ class PDFViewerWindow(QtWidgets.QMainWindow):
         self._center_on_rect(r["page"], r["rect"])
         self.pulse(r["page"], r["rect"])
 
+    def set_highlight_group(self, items, index=0):
+        """items: [(pno, rect, color_hex)]; index — текущий."""
+        self.pdf_doc.set_ai_highlight_group(items)
+        self._group_idx = max(0, min(index, len(items) - 1)) if items else -1
+        self._draw_ai_highlight()
+        if items:
+            pno, rect, _ = items[self._group_idx]
+            self.nav_go(pno, rect, push=False)
+            self.pulse(pno, rect)
+
+    def next_in_group(self):
+        group = self.pdf_doc.get_ai_highlight_group()
+        if not group:
+            return
+        self._group_idx = (self._group_idx + 1) % len(group)
+        pno, rect, _ = group[self._group_idx]
+        self._draw_ai_highlight()
+        self.nav_go(pno, rect, push=False)
+        self.pulse(pno, rect)
+
+    def prev_in_group(self):
+        group = self.pdf_doc.get_ai_highlight_group()
+        if not group:
+            return
+        self._group_idx = (self._group_idx - 1) % len(group)
+        pno, rect, _ = group[self._group_idx]
+        self._draw_ai_highlight()
+        self.nav_go(pno, rect, push=False)
+        self.pulse(pno, rect)
+
     def next_match(self):
         if self.search_results:
             self.search_idx = (self.search_idx + 1) % len(self.search_results)
@@ -921,6 +979,7 @@ class PDFViewerWindow(QtWidgets.QMainWindow):
     def closeEvent(self, event):
         self.pdf_doc.clear_search_highlights()
         self.pdf_doc.clear_ai_highlight()
+        self.pdf_doc.clear_ai_highlight_group()  # <--- добавлено
         self.pdf_doc.thumbs.clear()
         self._thumb_cache.clear()
         super().closeEvent(event)

@@ -107,22 +107,49 @@ class BaseClient:
 
     # ---------------- ранкинг страниц ----------------
     def rank_pages(self, pages_text, question, top_n=12):
-        def toks(s):
-            return re.findall(r"[A-Za-zА-яЁё0-9]{3,}", s.lower())
+        """TF-IDF cosine-ранкинг страниц под вопрос (без внешних зависимостей).
 
-        q = Counter(toks(question))
-        if not q:
+        IDF считается по корпусу страниц документа, TF — с нормировкой
+        на длину страницы. Возвращает отсортированный список индексов
+        страниц (0-based), включая страницу 0.
+        """
+
+        def toks(s):
+            return re.findall(r"[A-Za-zА-яЁё0-9]{3,}", (s or "").lower())
+
+        q_toks = toks(question)
+        if not q_toks:
             return list(range(min(top_n, len(pages_text))))
-        nq = math.sqrt(sum(v * v for v in q.values())) or 1.0
+
+        page_toks = [toks(t) for t in pages_text]
+        # IDF: log((N+1)/(df+1)) + 1
+        df = {}
+        for toks_list in page_toks:
+            for w in set(toks_list):
+                df[w] = df.get(w, 0) + 1
+        n_docs = max(1, len(page_toks))
+
+        def tfidf(tokens):
+            tf = {}
+            for w in tokens:
+                tf[w] = tf.get(w, 0) + 1
+            length = max(1, len(tokens))
+            vec = {}
+            for w, c in tf.items():
+                idf = math.log((n_docs + 1) / (df.get(w, 0) + 1)) + 1.0
+                vec[w] = (c / length) * idf
+            return vec
+
+        q_vec = tfidf(q_toks)
+        q_norm = math.sqrt(sum(v * v for v in q_vec.values())) or 1.0
+
         scores = []
-        for txt in pages_text:
-            c = Counter(toks(txt))
-            if not c:
-                scores.append(0.0)
-                continue
-            dot = sum(q[w] * c.get(w, 0) for w in q)
-            nd = math.sqrt(sum(v * v for v in c.values())) or 1.0
-            scores.append(dot / (nq * nd))
+        for toks_list in page_toks:
+            p_vec = tfidf(toks_list)
+            p_norm = math.sqrt(sum(v * v for v in p_vec.values())) or 1.0
+            dot = sum(q_vec[w] * p_vec.get(w, 0.0) for w in q_vec)
+            scores.append(dot / (q_norm * p_norm))
+
         order = sorted(range(len(pages_text)), key=lambda i: -scores[i])
         picked = [i for i in order if scores[i] > 0][:top_n]
         if pages_text and 0 not in picked:

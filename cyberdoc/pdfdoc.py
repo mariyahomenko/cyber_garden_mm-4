@@ -67,6 +67,7 @@ class PDFDocument:
         self.search_highlights = {}   # {(pno, rect_tuple): True}
         self.bookmarks = []
         self.thumbs = {}
+        self._ai_highlight_group = []
         self._ai_highlights = []      # [(pno, fitz.Rect)] — подсветки из ответа
         # Колонко-ориентированный текст (для промпта и ранкинга)
         self.pages_text = [self._extract_page_text(p) for p in self.doc]
@@ -427,6 +428,24 @@ class PDFDocument:
     def clear_ai_highlight(self):
         self._ai_highlights = []
 
+    def set_ai_highlight_group(self, items):
+        """items: [(pno, rect, color_hex)] — несколько мест одновременно."""
+        out = []
+        for pno, rect, color in items:
+            if rect is None:
+                continue
+            try:
+                out.append((int(pno), fitz.Rect(rect), color))
+            except Exception:
+                continue
+        self._ai_highlight_group = out
+
+    def get_ai_highlight_group(self):
+        return list(getattr(self, "_ai_highlight_group", []))
+
+    def clear_ai_highlight_group(self):
+        self._ai_highlight_group = []
+
     # ==================== ЛЕЙАУТ ====================
     def _page_layout(self, pno):
         if pno in self._layout_cache:
@@ -607,6 +626,12 @@ class PDFDocument:
         q = " ".join((quote or "").split())
         if not q:
             return None
+
+        # --- скан: если текстового слоя нет, принудительно запускаем OCR ---
+        if not self.has_text_layer(pno) and OCR_AVAILABLE:
+            if not (self.pages_text[pno] or "").strip():
+                self.ocr_page(pno)
+
         try:
             rects = page.search_for(q)
         except Exception:

@@ -16,7 +16,7 @@
 - `cyberdoc/pdfdoc.py` — открытие PDF, порядок чтения колонок, OCR, поиск и координаты подсветки.
 - `cyberdoc/client.py` — общий HTTP-клиент, DeepSeek, OAuth-авторизация GigaChat и повторные попытки.
 - `cyberdoc/research.py` — извлечение и проверки структурированных показателей.
-- `cyberdoc/ui/research_dialog.py` — интерфейс предметных данных.
+- `cyberdoc/research_dialog.py` — интерфейс предметных данных.
 - `cyberdoc/renderer.py` — HTML ответа, формулы и ссылки на страницы.
 - `cyberdoc/theme.py` — тёмная и светлая темы и единые стили контролов.
 - `cyberdoc/export_utils.py` — экспорт паспорта и набора данных.

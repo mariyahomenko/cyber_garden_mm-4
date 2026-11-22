@@ -8,12 +8,13 @@ from ..parser import parse_answer, PLACEHOLDER_RE
 from ..pdfdoc import PDFDocument, MODE_PHRASE, MODE_WORDS, MODE_SUBSTRING
 from ..renderer import render_answer_html
 from ..export_utils import export_json, export_tz_json
-from .research_dialog import ResearchDialog
+from cyberdoc.research_dialog import ResearchDialog
 from .answer_window import AnswerWindow
 from .pdf_viewer import PDFViewerWindow
 from .widgets import (IconButton, SearchLineEdit, BarTextEdit,
                       BarTextBrowser, make_bar, BTN_SIZE)
 import fitz
+from ..export_utils import export_json, export_tz_json, export_submission_csv
 
 SETTINGS = QtCore.QSettings("CyberGarden", "CyberDoc")
 APP_NAME = "CyberDoc"
@@ -417,9 +418,31 @@ class PDFSearchApp(QtWidgets.QMainWindow):
                 self, "Выберите PDF", "", "PDF (*.pdf)")
         if not path:
             return
-        if path in self.docs:
-            self._switch_doc(path)
-            return
+
+        # --- Защита от дубликатов ---
+        # 1. Нормализуем путь (убираем разницу в слешах и регистре)
+        path = os.path.normcase(os.path.abspath(path))
+
+        # 2. Проверяем, нет ли уже открытого файла с таким же именем и размером
+        try:
+            new_size = os.path.getsize(path)
+        except OSError:
+            new_size = -1
+
+        new_name = os.path.basename(path).lower()
+
+        for existing_path, d in self.docs.items():
+            if existing_path == path:
+                self._switch_doc(existing_path)
+                return
+            if d.name.lower() == new_name:
+                try:
+                    if new_size == -1 or os.path.getsize(existing_path) == new_size:
+                        self._switch_doc(existing_path)
+                        return
+                except OSError:
+                    pass
+        # -----------------------------
 
         # Блокируем интерфейс на время загрузки
         QtWidgets.QApplication.setOverrideCursor(QtCore.Qt.WaitCursor)
@@ -573,6 +596,7 @@ class PDFSearchApp(QtWidgets.QMainWindow):
     def open_research(self):
         if self._research_dialog is None:
             self._research_dialog = ResearchDialog(self.docs, self)
+            self._research_dialog.jump.connect(self._jump_from_research)
         self._research_dialog.show()
         self._research_dialog.raise_()
         self._research_dialog.activateWindow()
@@ -718,6 +742,71 @@ class PDFSearchApp(QtWidgets.QMainWindow):
     # ================================================================
     # ссылки
     # ================================================================
+    def _jump_from_research(self, path, page, fragment):
+        if not self.docs:
+            return
+        if path and path in self.docs:
+            self._switch_doc(path)
+        doc = self.current_doc()
+        if doc is None:
+            return
+
+        entry = None
+        rd = self._research_dialog
+        if rd is not None and hasattr(rd, "last_jump_record"):
+            entry = rd.last_jump_record()
+
+        group_records = []
+        if entry is not None:
+            group_records.append(entry)
+            if entry.get("duplicate_of"):
+                for r in rd.data.get("results", []):
+                    if r.get("result_id") == entry["duplicate_of"]:
+                        group_records.insert(0, r)
+                        break
+            for r in rd.data.get("results", []):
+                if r.get("duplicate_of") == entry.get("result_id"):
+                    group_records.append(r)
+
+        items = []
+        colors = ["#8c64ff", "#3aa6ff", "#ffaa00", "#ff5a5a"]
+        for i, rec in enumerate(group_records):
+            pno = doc.to_pdf_index(rec.get("source_page"))
+            if pno is None:
+                continue
+            frag = rec.get("source_fragment") or ""
+            rect = doc.resolve_anchor(rec.get("source_page"), frag) if frag else None
+            if rect is None and frag:
+                first = " ".join(frag.split()[:3])
+                rects = doc.find_all_on_page(pno, first)
+                rect = rects[0] if rects else None
+            if rect is not None:
+                items.append((pno, rect, colors[i % len(colors)]))
+
+        if not items:
+            pno = doc.to_pdf_index(int(page))
+            if pno is None:
+                return
+            rect = doc.resolve_anchor(int(page), fragment) if fragment else None
+            if rect is not None:
+                doc.set_ai_highlights([(pno, rect)])
+                self.open_pdf_viewer(pno, focus_rect=rect, pulse_rect=rect)
+            else:
+                doc.clear_ai_highlight()
+                self.open_pdf_viewer(pno)
+                self.header_status.setText("●  Фрагмент не найден")
+            return
+
+        first_pno, first_rect, _ = items[0]
+        self.open_pdf_viewer(first_pno, focus_rect=first_rect,
+                             pulse_rect=first_rect)
+        if self.viewer is not None:
+            self.viewer.set_highlight_group(items, index=0)
+        n = len(items)
+        self.header_status.setText(
+            "●  Найдено %d совпадений (←/→ для переключения)" % n
+            if n > 1 else "●  Фрагмент найден")
+
     def on_link_clicked(self, url):
         s = url.toString()
         doc = self.current_doc()
@@ -996,16 +1085,47 @@ class PDFSearchApp(QtWidgets.QMainWindow):
             QtWidgets.QMessageBox.critical(self, "Экспорт", str(e))
 
     def _export_tz(self):
-        path, _ = QtWidgets.QFileDialog.getSaveFileName(
-            self, "Экспорт данных по ТЗ", "cyberdoc_dataset.json",
-            "JSON (*.json)")
-        if not path:
+        """Экспорт набора по ТЗ: 7 CSV (формат сдачи) + JSON."""
+        from ..research import extract_publication
+        from ..export_utils import export_submission_csv, export_tz_json
+        if not self.docs:
+            QtWidgets.QMessageBox.information(
+                self, "Экспорт", "Нет открытых PDF.")
             return
+        folder = QtWidgets.QFileDialog.getExistingDirectory(
+            self, "Папка для 7 CSV (submission_template)")
+        if not folder:
+            return
+        workspace = {k: [] for k in (
+            "publications", "materials", "devices", "layers",
+            "measurements", "results", "issues")}
+        QtWidgets.QApplication.setOverrideCursor(QtCore.Qt.WaitCursor)
         try:
-            export_tz_json(path, APP_NAME, "1.0", self.client,
+            for doc in self.docs.values():
+                full = extract_publication(doc)
+                workspace["publications"].append(full["publication"])
+                workspace["materials"].extend(full["materials"])
+                workspace["devices"].extend(full["devices"])
+                workspace["layers"].extend(full["layers"])
+                workspace["measurements"].extend(full["measurements"])
+                workspace["results"].extend(full["results"])
+                workspace["issues"].extend(full["issues"])
+            written = export_submission_csv(folder, workspace)
+            # Дополнительно JSON-паспорт (RAG-представление)
+            json_path = os.path.join(folder, "cyberdoc_dataset.json")
+            export_tz_json(json_path, APP_NAME, "1.0", self.client,
                            self.provider, self.docs, self.history)
         except Exception as e:
+            QtWidgets.QApplication.restoreOverrideCursor()
             QtWidgets.QMessageBox.critical(self, "Экспорт", str(e))
+            return
+        finally:
+            QtWidgets.QApplication.restoreOverrideCursor()
+        QtWidgets.QMessageBox.information(
+            self, "Экспорт",
+            "Записано %d CSV + JSON в:\n%s\n\nПроверка:\n"
+            "python tools/check_submission.py \"%s\" test"
+            % (len(written), folder, folder))
 
     # ================================================================
     # сессия

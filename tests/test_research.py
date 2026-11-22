@@ -16,6 +16,6 @@ class ResearchTests(unittest.TestCase):
     def test_invalid_value_retained(self):
         r={'domain':SOLAR,'result_id':'1','metric_name':'PCE','normalized_value':150,'normalized_unit':'%',
            'source_page':1,'source_fragment':'PCE=150%', 'extraction_status':'candidate'}
-        self.assertIn('PERCENT_RANGE',[f['rule'] for f in validate(r)])
+        self.assertIn('percent_range', [f['check_name'] for f in validate(r)])
         self.assertEqual(r['normalized_value'],150)
 if __name__=='__main__':unittest.main()
