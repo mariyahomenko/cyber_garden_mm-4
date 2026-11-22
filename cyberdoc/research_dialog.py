@@ -1,7 +1,9 @@
 """Research data review and export window (7 tabs per TZ).
 
 Каждая вкладка = одна таблица формата сдачи (submission_template).
-Данные — из research.extract_publication. Экспорт — 7 CSV + JSON.
+Данные — из research.extract_publication (solar) или
+research_rag.extract_publication_rag (RAG).
+Экспорт — 7 CSV + JSON.
 Двойной клик по строке — переход в PDF с подсветкой фрагмента и дубликатов.
 """
 import csv
@@ -14,6 +16,10 @@ from . import theme
 from .research import (
     SOLAR, RAG, extract_publication, validate, import_workspace,
 )
+from .research_rag import (
+    extract_publication_rag, CSV_FIELDS_RAG,
+)
+from .export_rag import export_rag_submission
 
 # Колонки вкладки «Результаты» в UI (в CSV — только машинные поля)
 RESULT_UI_COLS = [
@@ -56,6 +62,17 @@ TABS = [
     ("Замечания", "issues", [
         "publication_id", "issue_id", "record_ids", "check_name",
         "description", "source_page", "source_fragment"]),
+]
+
+# UI-вкладки для RAG-домена (порядок и колонки — из schema.json).
+RAG_TABS = [
+    ("Публикации", "publications", CSV_FIELDS_RAG["publications"]),
+    ("Конфигурации", "configurations", CSV_FIELDS_RAG["configurations"]),
+    ("Наборы", "datasets", CSV_FIELDS_RAG["datasets"]),
+    ("Задачи", "tasks", CSV_FIELDS_RAG["tasks"]),
+    ("Эксперименты", "experiments", CSV_FIELDS_RAG["experiments"]),
+    ("Результаты", "results", CSV_FIELDS_RAG["results"]),
+    ("Замечания", "issues", CSV_FIELDS_RAG["issues"]),
 ]
 
 CSV_NAMES = {
@@ -157,6 +174,7 @@ class ResearchDialog(QtWidgets.QDialog):
         self.domain = QtWidgets.QComboBox()
         self.domain.addItem("Солнечные элементы", SOLAR)
         self.domain.addItem("RAG-системы", RAG)
+        self.domain.currentIndexChanged.connect(self._on_domain_changed)
         bar.addWidget(self.domain)
 
         self.scan = QtWidgets.QPushButton("Извлечь из открытых PDF")
@@ -185,23 +203,37 @@ class ResearchDialog(QtWidgets.QDialog):
         lay.addWidget(self.tabs, 1)
         self.tables = {}
 
-        for title, key, cols in TABS:
+        self._build_tables(TABS)
+        self.retheme()
+
+    # ------------------------------------------------------------ UI
+    def _build_tables(self, tabs):
+        """Перестраивает вкладки под выбранный домен."""
+        self.tabs.clear()
+        self.tables = {}
+        for title, key, cols in tabs:
             table = QtWidgets.QTableWidget(0, len(cols))
             table.setHorizontalHeaderLabels(cols)
             table.verticalHeader().setVisible(False)
-            table.setEditTriggers(
-                QtWidgets.QAbstractItemView.NoEditTriggers)
-            table.setSelectionBehavior(
-                QtWidgets.QAbstractItemView.SelectRows)
+            table.setEditTriggers(QtWidgets.QAbstractItemView.NoEditTriggers)
+            table.setSelectionBehavior(QtWidgets.QAbstractItemView.SelectRows)
             table.setSortingEnabled(True)
             table.setAlternatingRowColors(True)
             table.horizontalHeader().setStretchLastSection(True)
             self.tabs.addTab(table, title)
             self.tables[key] = table
-
         self.retheme()
 
-    # ------------------------------------------------------------ UI
+    def _on_domain_changed(self, _idx):
+        """Смена домена: другие вкладки и другие ключи self.data."""
+        if self.domain.currentData() == RAG:
+            self._build_tables(RAG_TABS)
+            self.data = {key: [] for _, key, _ in RAG_TABS}
+        else:
+            self._build_tables(TABS)
+            self.data = {key: [] for _, key, _ in TABS}
+        self.status.setText("")
+
     def retheme(self):
         colors = theme.html_colors()
         bg = colors.get("block") or "#1d2541"
@@ -214,43 +246,39 @@ class ResearchDialog(QtWidgets.QDialog):
             "grid": grid, "head": head,
         }
         for w in self.findChildren(QtWidgets.QWidget):
-            if isinstance(w, (QtWidgets.QPushButton, QtWidgets.QComboBox)):
+            if isinstance(w, QtWidgets.QPushButton):
                 w.setStyleSheet(theme.BUTTON_QSS)
+            elif isinstance(w, QtWidgets.QComboBox):
+                theme.style_combo(w)
             elif isinstance(w, QtWidgets.QTableWidget):
                 w.setStyleSheet(theme.INPUT_QSS + table_qss)
 
     # ------------------------------------------------------------ scan
     def run_scan(self):
         domain = self.domain.currentData()
-        if domain != SOLAR:
-            QtWidgets.QMessageBox.information(
-                self, "RAG",
-                "Извлечение для RAG-домена пока не реализовано. "
-                "Переключитесь на «Солнечные элементы».")
-            return
         if not self.docs:
             QtWidgets.QMessageBox.information(
                 self, "Нет документов", "Сначала загрузите PDF.")
             return
-        self.data = {key: [] for _, key, _ in TABS}
+        if domain == RAG:
+            tabs = RAG_TABS
+        else:
+            tabs = TABS
+        self.data = {key: [] for _, key, _ in tabs}
         QtWidgets.QApplication.setOverrideCursor(QtCore.Qt.WaitCursor)
         try:
             for doc in self.docs.values():
-                full = extract_publication(doc)
-                self.data["publications"].append(full["publication"])
-                self.data["materials"].extend(full["materials"])
-                self.data["devices"].extend(full["devices"])
-                self.data["layers"].extend(full["layers"])
-                self.data["measurements"].extend(full["measurements"])
-                self.data["results"].extend(full["results"])
-                self.data["issues"].extend(full["issues"])
-            # человекочитаемая пометка дубликатов (только в UI)
+                if domain == RAG:
+                    full = extract_publication_rag(doc)
+                else:
+                    full = extract_publication(doc)
+                for key in self.data:
+                    self.data[key].extend(full.get(key, []) or [])
             self._annotate_duplicates()
         finally:
             QtWidgets.QApplication.restoreOverrideCursor()
         self.fill_tables()
-        total = sum(len(v) for v in self.data.values())
-        self.status.setText("Записей: %d" % total)
+        self.status.setText("Записей: %d" % sum(len(v) for v in self.data.values()))
 
     def _annotate_duplicates(self):
         """Заполняет duplicate_info: 'оригинал', 'дубликат <id> (стр. N)'."""
@@ -270,7 +298,8 @@ class ResearchDialog(QtWidgets.QDialog):
                 r["duplicate_info"] = ""
 
     def fill_tables(self):
-        for title, key, cols in TABS:
+        tabs = RAG_TABS if self.domain.currentData() == RAG else TABS
+        for title, key, cols in tabs:
             table = self.tables[key]
             rows = self.data.get(key, [])
             table.setSortingEnabled(False)
@@ -314,7 +343,6 @@ class ResearchDialog(QtWidgets.QDialog):
                 break
         if path is None and self.docs:
             path = next(iter(self.docs.keys()))
-        # важно: эмитим запись целиком, чтобы main_window знал duplicate_of
         self._emit_jump(path or "", int(page), fragment, rec)
 
     def _emit_jump(self, path, page, fragment, rec):
@@ -336,8 +364,9 @@ class ResearchDialog(QtWidgets.QDialog):
         except Exception as e:
             QtWidgets.QMessageBox.critical(self, "Импорт", str(e))
             return
-        self.data = {key: [] for _, key, _ in TABS}
-        for _, key, _ in TABS:
+        tabs = RAG_TABS if self.domain.currentData() == RAG else TABS
+        self.data = {key: [] for _, key, _ in tabs}
+        for _, key, _ in tabs:
             self.data[key] = payload.get(key, [])
         self._annotate_duplicates()
         self.fill_tables()
@@ -345,30 +374,25 @@ class ResearchDialog(QtWidgets.QDialog):
 
     # ------------------------------------------------------------ export CSV
     def export_csv(self):
-        folder = QtWidgets.QFileDialog.getExistingDirectory(
-            self, "Папка для CSV")
+        folder = QtWidgets.QFileDialog.getExistingDirectory(self, "Папка для CSV")
         if not folder:
             return
-        written = []
-        for _, key, _ in TABS:
-            cols = CSV_FIELDS[key]
-            path = os.path.join(folder, CSV_NAMES[key])
-            with open(path, "w", encoding="utf-8-sig", newline="") as fh:
-                w = csv.DictWriter(fh, fieldnames=cols, extrasaction="ignore")
-                w.writeheader()
-                for row in self.data.get(key, []):
-                    clean = {}
-                    for c in cols:
-                        v = row.get(c)
-                        if isinstance(v, (list, tuple)):
-                            v = ";".join(str(x) for x in v)
-                        clean[c] = "" if v is None else v
-                    w.writerow(clean)
-            written.append(CSV_NAMES[key])
-        self.status.setText("CSV: %s" % ", ".join(written))
+        if self.domain.currentData() == RAG:
+            written = export_rag_submission(folder, self.data)
+        else:
+            written = []
+            for _, key, _ in TABS:
+                cols = CSV_FIELDS[key]
+                path = os.path.join(folder, CSV_NAMES[key])
+                with open(path, "w", encoding="utf-8-sig", newline="") as fh:
+                    w = csv.DictWriter(fh, fieldnames=cols, extrasaction="ignore")
+                    w.writeheader()
+                    for row in self.data.get(key, []):
+                        w.writerow({c: ("" if row.get(c) is None else row.get(c))
+                                    for c in cols})
+                written.append(path)
         QtWidgets.QMessageBox.information(
-            self, "Экспорт",
-            "Записано %d файлов в:\n%s" % (len(written), folder))
+            self, "Экспорт", "Записано %d файлов в:\n%s" % (len(written), folder))
 
     # ------------------------------------------------------------ export JSON
     def export_json(self):

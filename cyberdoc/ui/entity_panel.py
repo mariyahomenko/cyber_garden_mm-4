@@ -63,10 +63,10 @@ class EntityPanel(QtWidgets.QWidget):
         flt = QtWidgets.QHBoxLayout()
         ev.addLayout(flt)
         self.type_box = QtWidgets.QComboBox()
-        self.type_box.setStyleSheet(theme.INPUT_QSS)
         self.type_box.addItems(["все", "числа", "формулы", "дубликаты"])
         self.type_box.currentIndexChanged.connect(self._apply_filters)
         flt.addWidget(self.type_box)
+        theme.style_combo(self.type_box)
 
         self.text_filter = QtWidgets.QLineEdit()
         self.text_filter.setStyleSheet(theme.INPUT_QSS)

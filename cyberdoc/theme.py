@@ -21,7 +21,7 @@ def current_theme(): return CURRENT
 def set_theme(name):
     global CURRENT, INPUT_QSS, BUTTON_QSS, LABEL_QSS, HINT_QSS
     global MAIN_QSS, TABLE_QSS, SCROLL_QSS, MENU_QSS, DIALOG_QSS
-    global ICON_BTN_QSS, CHECK_QSS, VIEW_BG, ACCENT, TEXT_COLOR
+    global ICON_BTN_QSS, CHECK_QSS, VIEW_BG, ACCENT, TEXT_COLOR, COMBO_QSS
     name = (name or "dark").lower()
     if name not in _PALETTES: name = "dark"
     CURRENT = name; p = _PALETTES[name]
@@ -39,8 +39,56 @@ QSplitter::handle { background:%(card_border)s; }
 QSplitter::handle:hover { background:%(accent)s; }
 * { font-family: "Custom"; }
 """ % p
+
+    # QComboBox и его popup — отдельным блоком, чтобы не терялся в INPUT_QSS
+    COMBO_QSS = """
+QComboBox {
+    background-color:%(input_bg)s;
+    color:%(text)s;
+    border:1px solid %(border)s;
+    border-radius:10px;
+    padding:9px 12px;
+    font-size:14px;
+}
+QComboBox:hover, QComboBox:focus {
+    border:1px solid %(accent)s;
+    background-color:%(input_bg_focus)s;
+}
+QComboBox::drop-down {
+    border:none;
+    background:transparent;
+    width:20px;
+}
+QComboBox::down-arrow {
+    image:none;
+}
+QComboBox QAbstractItemView {
+    background-color:%(input_bg)s;
+    color:%(text)s;
+    border:1px solid %(border)s;
+    border-radius:8px;
+    outline:0;
+    padding:0px;
+    margin:0px;
+    selection-background-color:%(accent2)s;
+    selection-color:white;
+}
+QComboBox QAbstractItemView::item {
+    background-color:%(input_bg)s;
+    color:%(text)s;
+    padding:8px 10px;
+    margin:0px;
+    border:0px;
+    min-height:22px;
+}
+QComboBox QAbstractItemView::item:selected {
+    background-color:%(accent2)s;
+    color:white;
+}
+""" % p
+
     INPUT_QSS = """
-QLineEdit, QTextEdit, QTextBrowser, QSpinBox, QComboBox { background-color:%(input_bg)s; color:%(text)s; border:1px solid %(border)s; border-radius:10px; padding:9px 12px; font-size:14px; selection-background-color:%(accent)s; selection-color:white; }
+QLineEdit, QTextEdit, QTextBrowser, QSpinBox { background-color:%(input_bg)s; color:%(text)s; border:1px solid %(border)s; border-radius:10px; padding:9px 12px; font-size:14px; selection-background-color:%(accent)s; selection-color:white; }
 QLineEdit:hover, QTextEdit:hover, QTextBrowser:hover { border-color:%(accent)s; }
 QLineEdit:focus, QTextEdit:focus, QTextBrowser:focus { border:1px solid %(accent)s; background-color:%(input_bg_focus)s; }
 QTextBrowser { background-color:%(input_bg)s; }
@@ -48,9 +96,8 @@ QTextEdit#QuestionBox { min-height:90px; border:1px solid %(border)s; }
 QTextEdit#QuestionBox:focus { border:1px solid %(accent)s; background-color:%(input_bg_focus)s; }
 QSpinBox { color:%(text)s; }
 QSpinBox::up-button, QSpinBox::down-button { background-color:%(border)s; border:none; width:17px; }
-QComboBox QAbstractItemView { background-color:%(input_bg)s; color:%(text)s; selection-background-color:%(accent2)s; border:1px solid %(border)s; }
-* { font-family: "Custom"; }
-""" % p
+""" % p + COMBO_QSS + "* { font-family: \"Custom\"; }"
+
     BUTTON_QSS = """
 QPushButton, QToolButton { background:qlineargradient(x1:0,y1:0,x2:0,y2:1,stop:0 #9a7bff,stop:1 #8a6bf0); color:white; border:none; border-radius:10px; padding:10px 16px; font-size:14px; font-weight:700; }
 QPushButton:hover, QToolButton:hover { background:qlineargradient(x1:0,y1:0,x2:0,y2:1,stop:0 #a892ff,stop:1 #9a7bff); }
@@ -118,7 +165,7 @@ QCheckBox::indicator:checked { background:%(accent2)s; border-color:%(accent)s; 
 
 def app_stylesheet(theme=None):
     name=(theme or CURRENT).lower(); saved=CURRENT; set_theme(name)
-    sheet=MAIN_QSS+INPUT_QSS+TABLE_QSS+SCROLL_QSS+MENU_QSS+DIALOG_QSS
+    sheet=(MAIN_QSS+INPUT_QSS+TABLE_QSS+SCROLL_QSS+MENU_QSS+DIALOG_QSS)
     set_theme(saved); return sheet
 
 def html_colors():
@@ -134,5 +181,49 @@ def apply_theme_to_app(app, theme):
         if callable(restyle):
             try: restyle()
             except Exception: pass
+
+
+def style_combo(box):
+    """Перекраска QComboBox и его popup под текущую тему.
+
+    Popup — отдельное top-level окно, глобальный QSS до него часто не
+    доходит, поэтому красим view() и его window() явно.
+    """
+    if not isinstance(box, QtWidgets.QComboBox):
+        return
+    p = _PALETTES[CURRENT]
+    box.setStyleSheet(COMBO_QSS)
+
+    view = box.view()
+    view.setStyleSheet("""
+QAbstractItemView {
+    background-color:%(input_bg)s;
+    color:%(text)s;
+    border:1px solid %(border)s;
+    outline:0;
+    padding:0px;
+    margin:0px;
+}
+QAbstractItemView::item {
+    background-color:%(input_bg)s;
+    color:%(text)s;
+    padding:8px 10px;
+    margin:0px;
+    border:0px;
+}
+QAbstractItemView::item:selected {
+    background-color:%(accent2)s;
+    color:white;
+}
+""" % p)
+    view.setSpacing(0)
+    view.setContentsMargins(0, 0, 0, 0)
+    view.setAutoFillBackground(False)
+    view.viewport().setAutoFillBackground(False)
+    popup = view.window()
+    if popup is not None:
+        popup.setStyleSheet(
+            "QFrame { background-color:%s; border:0px; margin:0px; }"
+            % p["input_bg"])
 
 set_theme("dark")
